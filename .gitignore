@@ -1,6 +1,9 @@
 node_modules/
+server/node_modules/
 .wrangler/
+server/.wrangler/
 .dev.vars
+server/.dev.vars
 .env
 .env.*
 *.log

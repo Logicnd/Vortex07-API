@@ -2,7 +2,7 @@
 
 Tiny Cloudflare Worker + D1 API for shared Vortex07 profile likes.
 
-Extension repo stays separate: [Vortex07-Extension](https://github.com/Logicnd/Vortex07-Extension).
+Code lives in [`server/`](./server). Extension stays separate: [Vortex07-Extension](https://github.com/Logicnd/Vortex07-Extension).
 
 ## Endpoints
 
@@ -15,11 +15,12 @@ Extension repo stays separate: [Vortex07-Extension](https://github.com/Logicnd/V
 ## Setup
 
 ```bash
+cd server
 npm install
 npm run db:create
 ```
 
-Paste the printed `database_id` into `wrangler.jsonc`, then:
+Paste the printed `database_id` into `server/wrangler.jsonc`, then:
 
 ```bash
 npm run db:migrate
