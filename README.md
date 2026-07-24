@@ -11,6 +11,11 @@ Deployed at: https://vortex07-api.vercel.app
 | `GET` | `/health` | — | `{ ok: true }` |
 | `GET` | `/v1/likes/:targetId` | `?actorId=123` | `{ count, liked, myVote }` |
 | `POST` | `/v1/likes/:targetId` | `{ "actorId": 123 }` | toggle like / unlike |
+| `GET` | `/v1/forum/categories` | — | category list |
+| `GET` | `/v1/forum/threads` | `?category=general` | thread list |
+| `POST` | `/v1/forum/threads` | `{ categoryId, title, body, authorId, authorName }` | create thread |
+| `GET` | `/v1/forum/threads/:id` | — | thread + posts |
+| `POST` | `/v1/forum/threads/:id/posts` | `{ body, authorId, authorName }` | reply |
 
 ## Setup (Vercel + Upstash Redis)
 

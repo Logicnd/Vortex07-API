@@ -2,6 +2,16 @@
   "rewrites": [
     { "source": "/", "destination": "/api/health" },
     { "source": "/health", "destination": "/api/health" },
-    { "source": "/v1/likes/:targetId", "destination": "/api/v1/likes/:targetId" }
+    { "source": "/v1/likes/:targetId", "destination": "/api/v1/likes/:targetId" },
+    { "source": "/v1/forum/categories", "destination": "/api/v1/forum/categories" },
+    { "source": "/v1/forum/threads", "destination": "/api/v1/forum/threads" },
+    {
+      "source": "/v1/forum/threads/:threadId",
+      "destination": "/api/v1/forum/threads/:threadId"
+    },
+    {
+      "source": "/v1/forum/threads/:threadId/posts",
+      "destination": "/api/v1/forum/threads/:threadId/posts"
+    }
   ]
 }
