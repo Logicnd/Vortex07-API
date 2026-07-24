@@ -151,6 +151,56 @@ export async function createThread({ categoryId, title, body, authorId, authorNa
   return { ok: true, thread, posts: [op] };
 }
 
+export async function renameAuthor({ authorId, authorName }) {
+  const db = await getRedis();
+  const uid = parseUserId(authorId);
+  const name = cleanText(authorName, 40);
+  if (uid === null || !name) {
+    return { ok: false, error: "bad-actor", status: 400 };
+  }
+
+  let updated = 0;
+  for (const cat of FORUM_CATEGORIES) {
+    const ids = await db.zRange(catKey(cat.id), 0, -1);
+    for (const id of ids) {
+      const raw = await db.get(threadKey(id));
+      if (!raw) continue;
+      let thread;
+      try {
+        thread = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      let dirty = false;
+      if (Number(thread.authorId) === uid && thread.authorName !== name) {
+        thread.authorName = name;
+        dirty = true;
+      }
+      if (dirty) {
+        await db.set(threadKey(id), JSON.stringify(thread));
+        updated += 1;
+      }
+
+      const posts = await db.lRange(postsKey(id), 0, -1);
+      for (let i = 0; i < posts.length; i += 1) {
+        let post;
+        try {
+          post = JSON.parse(posts[i]);
+        } catch {
+          continue;
+        }
+        if (Number(post.authorId) === uid && post.authorName !== name) {
+          post.authorName = name;
+          await db.lSet(postsKey(id), i, JSON.stringify(post));
+          updated += 1;
+        }
+      }
+    }
+  }
+
+  return { ok: true, authorId: uid, authorName: name, updated };
+}
+
 export async function replyToThread({ threadId, body, authorId, authorName }) {
   const db = await getRedis();
   const id = String(threadId || "");
