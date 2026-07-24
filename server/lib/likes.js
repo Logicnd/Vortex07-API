@@ -1,9 +1,23 @@
-import { Redis } from "@upstash/redis";
+import { createClient } from "redis";
 
-function redis() {
-  // Vercel KV / Upstash: KV_REST_API_URL + KV_REST_API_TOKEN
-  // or UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN
-  return Redis.fromEnv();
+/** @type {import('redis').RedisClientType | null} */
+let client = null;
+
+async function getRedis() {
+  const url = process.env.REDIS_URL;
+  if (!url) {
+    throw new Error("REDIS_URL missing");
+  }
+
+  if (!client) {
+    client = createClient({ url });
+    client.on("error", (err) => console.error("redis error", err));
+    await client.connect();
+  } else if (!client.isOpen) {
+    await client.connect();
+  }
+
+  return client;
 }
 
 function key(targetId) {
@@ -17,12 +31,12 @@ export function parseUserId(value) {
 }
 
 export async function getLikeStatus(targetId, actorId) {
-  const db = redis();
+  const db = await getRedis();
   const k = key(targetId);
-  const count = Number(await db.scard(k)) || 0;
+  const count = Number(await db.sCard(k)) || 0;
   let liked = false;
   if (actorId !== null) {
-    liked = Boolean(await db.sismember(k, String(actorId)));
+    liked = Boolean(await db.sIsMember(k, String(actorId)));
   }
   return {
     targetId,
@@ -37,15 +51,15 @@ export async function toggleLike(targetId, actorId) {
     return { ok: false, reason: "self", status: 400 };
   }
 
-  const db = redis();
+  const db = await getRedis();
   const k = key(targetId);
   const member = String(actorId);
-  const already = Boolean(await db.sismember(k, member));
+  const already = Boolean(await db.sIsMember(k, member));
 
   if (already) {
-    await db.srem(k, member);
+    await db.sRem(k, member);
   } else {
-    await db.sadd(k, member);
+    await db.sAdd(k, member);
   }
 
   const status = await getLikeStatus(targetId, actorId);

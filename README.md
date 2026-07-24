@@ -15,10 +15,9 @@ Deployed at: https://vortex07-api.vercel.app
 ## Setup (Vercel + Upstash Redis)
 
 1. In the Vercel project, set **Root Directory** to `server`
-2. Add storage: **Integrations → Upstash** (or Vercel KV) so these env vars exist:
-   - `KV_REST_API_URL` + `KV_REST_API_TOKEN`  
-   or `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
-3. Redeploy
+2. Add **Upstash Redis** storage and connect it to this project
+3. Confirm env var **`REDIS_URL`** is set for Production
+4. Redeploy
 
 ```bash
 cd server
