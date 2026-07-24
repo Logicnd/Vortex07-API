@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vortex07-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-24",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  // 1) npm run db:create
+  // 2) paste database_id below
+  // 3) npm run db:migrate
+  // 4) npm run deploy
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vortex07",
+      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+    }
+  ]
+}
