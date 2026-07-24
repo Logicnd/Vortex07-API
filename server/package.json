@@ -1,16 +1,16 @@
 {
   "name": "vortex07-api",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:create": "wrangler d1 create vortex07",
-    "db:migrate:local": "wrangler d1 execute vortex07 --local --file=./schema.sql",
-    "db:migrate": "wrangler d1 execute vortex07 --remote --file=./schema.sql"
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@upstash/redis": "^1.35.0"
   },
   "devDependencies": {
-    "wrangler": "^4.28.0"
+    "vercel": "^44.0.0"
   }
 }

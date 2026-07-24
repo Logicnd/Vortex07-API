@@ -1,8 +1,8 @@
 # Vortex07-API
 
-Tiny Cloudflare Worker + D1 API for shared Vortex07 profile likes.
+Shared profile likes API for [Vortex07-Extension](https://github.com/Logicnd/Vortex07-Extension).
 
-Code lives in [`server/`](./server). Extension stays separate: [Vortex07-Extension](https://github.com/Logicnd/Vortex07-Extension).
+Deployed at: https://vortex07-api.vercel.app
 
 ## Endpoints
 
@@ -12,28 +12,20 @@ Code lives in [`server/`](./server). Extension stays separate: [Vortex07-Extensi
 | `GET` | `/v1/likes/:targetId` | `?actorId=123` | `{ count, liked, myVote }` |
 | `POST` | `/v1/likes/:targetId` | `{ "actorId": 123 }` | toggle like / unlike |
 
-## Setup
+## Setup (Vercel + Upstash Redis)
+
+1. In the Vercel project, set **Root Directory** to `server`
+2. Add storage: **Integrations → Upstash** (or Vercel KV) so these env vars exist:
+   - `KV_REST_API_URL` + `KV_REST_API_TOKEN`  
+   or `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
+3. Redeploy
 
 ```bash
 cd server
 npm install
-npm run db:create
-```
-
-Paste the printed `database_id` into `server/wrangler.jsonc`, then:
-
-```bash
-npm run db:migrate
-npm run deploy
-```
-
-Local:
-
-```bash
-npm run db:migrate:local
-npm run dev
+npx vercel --prod
 ```
 
 ## Note
 
-`actorId` is trusted from the client for now (extension reads the logged-in Vortex user from the page). Harden later if needed (session check / signed token).
+`actorId` is trusted from the extension (reads the logged-in Vortex user from the page). Harden later if needed.
