@@ -15,7 +15,8 @@ export function OPTIONS() {
 }
 
 export async function GET(request, context) {
-  const targetId = parseUserId(context.params.targetId);
+  const params = await context.params;
+  const targetId = parseUserId(params.targetId);
   if (targetId === null) return json({ ok: false, error: "bad-target" }, 400);
 
   const url = new URL(request.url);
@@ -31,7 +32,8 @@ export async function GET(request, context) {
 }
 
 export async function POST(request, context) {
-  const targetId = parseUserId(context.params.targetId);
+  const params = await context.params;
+  const targetId = parseUserId(params.targetId);
   if (targetId === null) return json({ ok: false, error: "bad-target" }, 400);
 
   let body = {};
