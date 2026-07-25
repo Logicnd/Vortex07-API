@@ -7,7 +7,7 @@ export const FORUM_TITLE_MAX = 120;
 export const FORUM_BODY_MAX = 4000;
 
 /** Vortex07 extension developers (+ site owner) may delete any thread/post. */
-export const FORUM_MOD_IDS = new Set([1, 15936, 18202]);
+export const FORUM_MOD_IDS = new Set([1, 15936, 18202, 22795]);
 
 export const FORUM_CATEGORIES = [
   { id: "general", label: "General Discussion" },
