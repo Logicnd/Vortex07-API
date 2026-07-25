@@ -292,7 +292,7 @@ export async function editPost({ threadId, postId, actorId, body, title }) {
     return { ok: false, error: "post-not-found", status: 404 };
   }
   const isAuthor = Number(post.authorId) === uid;
-  if (!isAuthor && !canModerateForum(actorId)) {
+  if (!isAuthor) {
     return { ok: false, error: "forbidden", status: 403 };
   }
 
@@ -302,7 +302,7 @@ export async function editPost({ threadId, postId, actorId, body, title }) {
 
   await db.lSet(postsKey(tid), index, JSON.stringify(post));
 
-  // OP edit may rename the thread (author or mod)
+  // OP author may rename the thread title
   if (index === 0 && title !== undefined && title !== null) {
     const cleanTitle = cleanText(title, FORUM_TITLE_MAX);
     if (!cleanTitle) return { ok: false, error: "bad-title", status: 400 };
