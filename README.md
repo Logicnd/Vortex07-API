@@ -11,11 +11,16 @@ Deployed at: https://vortex07-api.vercel.app
 | `GET` | `/health` | — | `{ ok: true }` |
 | `GET` | `/v1/likes/:targetId` | `?actorId=123` | `{ count, liked, myVote }` |
 | `POST` | `/v1/likes/:targetId` | `{ "actorId": 123 }` | toggle like / unlike |
+| `GET` | `/v1/ratings/:targetId` | `?actorId=123` | `{ likes, dislikes, myVote }` game votes |
+| `POST` | `/v1/ratings/:targetId` | `{ "actorId": 123, "vote": "up"\|"down"\|null }` | set / toggle vote |
 | `GET` | `/v1/forum/categories` | — | category list |
 | `GET` | `/v1/forum/threads` | `?category=general` | thread list |
 | `POST` | `/v1/forum/threads` | `{ categoryId, title, body, authorId, authorName }` | create thread |
 | `GET` | `/v1/forum/threads/:id` | — | thread + posts |
+| `DELETE` | `/v1/forum/threads/:id` | `{ actorId }` | delete thread (author or mods: 1, 15936, 18202) |
 | `POST` | `/v1/forum/threads/:id/posts` | `{ body, authorId, authorName }` | reply |
+| `PATCH` | `/v1/forum/threads/:id/posts/:postId` | `{ actorId, body, title? }` | edit own post (`title` only for OP) |
+| `DELETE` | `/v1/forum/threads/:id/posts/:postId` | `{ actorId }` | delete post (author or same mods) |
 
 ## Setup (Vercel + Upstash Redis)
 

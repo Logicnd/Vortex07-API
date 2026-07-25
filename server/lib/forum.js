@@ -6,11 +6,19 @@ let client = null;
 export const FORUM_TITLE_MAX = 120;
 export const FORUM_BODY_MAX = 4000;
 
+/** Vortex07 extension developers (+ site owner) may delete any thread/post. */
+export const FORUM_MOD_IDS = new Set([1, 15936, 18202]);
+
 export const FORUM_CATEGORIES = [
   { id: "general", label: "General Discussion" },
   { id: "help", label: "Help & Support" },
   { id: "offtopic", label: "Off Topic" },
 ];
+
+export function canModerateForum(actorId) {
+  const uid = parseUserId(actorId);
+  return uid !== null && FORUM_MOD_IDS.has(uid);
+}
 
 async function getRedis() {
   const url = process.env.REDIS_URL;
@@ -237,4 +245,174 @@ export async function replyToThread({ threadId, body, authorId, authorName }) {
   await db.zAdd(catKey(thread.categoryId), { score: Date.now(), value: id });
 
   return { ok: true, thread, post };
+}
+
+/**
+ * Authors may edit their own posts. When editing the first post, they may
+ * also rename the thread title (same actor must own the post).
+ */
+export async function editPost({ threadId, postId, actorId, body, title }) {
+  const db = await getRedis();
+  const tid = String(threadId || "");
+  const pid = String(postId || "");
+  const uid = parseUserId(actorId);
+  if (!tid || !pid) return { ok: false, error: "bad-id", status: 400 };
+  if (uid === null) return { ok: false, error: "bad-actor", status: 400 };
+
+  const raw = await db.get(threadKey(tid));
+  if (!raw) return { ok: false, error: "not-found", status: 404 };
+
+  let thread;
+  try {
+    thread = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "corrupt", status: 500 };
+  }
+
+  const cleanBody = cleanText(body, FORUM_BODY_MAX);
+  if (!cleanBody) return { ok: false, error: "bad-body", status: 400 };
+
+  const postRaw = await db.lRange(postsKey(tid), 0, -1);
+  let index = -1;
+  let post = null;
+  for (let i = 0; i < postRaw.length; i += 1) {
+    try {
+      const row = JSON.parse(postRaw[i]);
+      if (String(row.id) === pid) {
+        index = i;
+        post = row;
+        break;
+      }
+    } catch {
+      /* skip */
+    }
+  }
+
+  if (!post || index < 0) {
+    return { ok: false, error: "post-not-found", status: 404 };
+  }
+  const isAuthor = Number(post.authorId) === uid;
+  if (!isAuthor && !canModerateForum(actorId)) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+
+  const now = new Date().toISOString();
+  post.body = cleanBody;
+  post.editedAt = now;
+
+  await db.lSet(postsKey(tid), index, JSON.stringify(post));
+
+  // OP edit may rename the thread (author or mod)
+  if (index === 0 && title !== undefined && title !== null) {
+    const cleanTitle = cleanText(title, FORUM_TITLE_MAX);
+    if (!cleanTitle) return { ok: false, error: "bad-title", status: 400 };
+    thread.title = cleanTitle;
+  }
+  thread.updatedAt = now;
+  await db.set(threadKey(tid), JSON.stringify(thread));
+  await db.zAdd(catKey(thread.categoryId), { score: Date.now(), value: tid });
+
+  return { ok: true, thread, post };
+}
+
+export async function deleteThread({ threadId, actorId }) {
+  const db = await getRedis();
+  const id = String(threadId || "");
+  const uid = parseUserId(actorId);
+  const raw = await db.get(threadKey(id));
+  if (!raw) return { ok: false, error: "not-found", status: 404 };
+
+  let thread;
+  try {
+    thread = JSON.parse(raw);
+  } catch {
+    thread = { id, categoryId: "general" };
+  }
+
+  const isOwner = uid !== null && Number(thread.authorId) === uid;
+  if (!canModerateForum(actorId) && !isOwner) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+
+  const cat = normalizeCategoryId(thread.categoryId);
+  await db.del(threadKey(id));
+  await db.del(postsKey(id));
+  await db.zRem(catKey(cat), id);
+
+  return { ok: true, deleted: "thread", threadId: id };
+}
+
+export async function deletePost({ threadId, postId, actorId }) {
+  const db = await getRedis();
+  const tid = String(threadId || "");
+  const pid = String(postId || "");
+  const uid = parseUserId(actorId);
+  if (!tid || !pid) return { ok: false, error: "bad-id", status: 400 };
+  if (uid === null) return { ok: false, error: "bad-actor", status: 400 };
+
+  const raw = await db.get(threadKey(tid));
+  if (!raw) return { ok: false, error: "not-found", status: 404 };
+
+  let thread;
+  try {
+    thread = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "corrupt", status: 500 };
+  }
+
+  const postRaw = await db.lRange(postsKey(tid), 0, -1);
+  const posts = [];
+  let removed = false;
+  let removedPost = null;
+  let removedIndex = -1;
+  for (let i = 0; i < postRaw.length; i += 1) {
+    try {
+      const post = JSON.parse(postRaw[i]);
+      if (String(post.id) === pid) {
+        removed = true;
+        removedPost = post;
+        removedIndex = i;
+        continue;
+      }
+      posts.push(post);
+    } catch {
+      /* skip corrupt */
+    }
+  }
+
+  if (!removed || !removedPost) {
+    return { ok: false, error: "post-not-found", status: 404 };
+  }
+
+  const isAuthor = Number(removedPost.authorId) === uid;
+  if (!canModerateForum(actorId) && !isAuthor) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+
+  // Deleting the OP while replies remain would orphan the thread — require
+  // full thread delete instead.
+  if (removedIndex === 0 && posts.length > 0) {
+    return { ok: false, error: "delete-thread-instead", status: 400 };
+  }
+
+  // Last post gone → remove the whole thread
+  if (posts.length === 0) {
+    const cat = normalizeCategoryId(thread.categoryId);
+    await db.del(threadKey(tid));
+    await db.del(postsKey(tid));
+    await db.zRem(catKey(cat), tid);
+    return { ok: true, deleted: "thread", threadId: tid, postId: pid };
+  }
+
+  await db.del(postsKey(tid));
+  if (posts.length) {
+    await db.rPush(postsKey(tid), ...posts.map((p) => JSON.stringify(p)));
+  }
+
+  thread.replyCount = Math.max(0, posts.length - 1);
+  const last = posts[posts.length - 1];
+  thread.updatedAt = last?.createdAt || thread.updatedAt;
+  await db.set(threadKey(tid), JSON.stringify(thread));
+
+  return { ok: true, deleted: "post", threadId: tid, postId: pid, thread };
 }

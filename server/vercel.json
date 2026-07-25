@@ -3,8 +3,10 @@
     { "source": "/", "destination": "/api/health" },
     { "source": "/health", "destination": "/api/health" },
     { "source": "/v1/likes/:targetId", "destination": "/api/v1/likes/:targetId" },
+    { "source": "/v1/ratings/:targetId", "destination": "/api/v1/ratings/:targetId" },
     { "source": "/v1/forum/categories", "destination": "/api/v1/forum/categories" },
     { "source": "/v1/forum/rename-author", "destination": "/api/v1/forum/rename-author" },
+    { "source": "/v1/forum/repair", "destination": "/api/v1/forum/repair" },
     { "source": "/v1/forum/threads", "destination": "/api/v1/forum/threads" },
     {
       "source": "/v1/forum/threads/:threadId",
@@ -13,6 +15,10 @@
     {
       "source": "/v1/forum/threads/:threadId/posts",
       "destination": "/api/v1/forum/threads/:threadId/posts"
+    },
+    {
+      "source": "/v1/forum/threads/:threadId/posts/:postId",
+      "destination": "/api/v1/forum/threads/:threadId/posts/:postId"
     }
   ]
 }
