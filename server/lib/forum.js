@@ -1,8 +1,5 @@
-import { createClient } from "redis";
+import { getRedis } from "./redis.js";
 import { hitRateLimit } from "./rate-limit.js";
-
-/** @type {import('redis').RedisClientType | null} */
-let client = null;
 
 export const FORUM_TITLE_MAX = 120;
 export const FORUM_BODY_MAX = 4000;
@@ -23,19 +20,6 @@ export const FORUM_CATEGORIES = [
 export function canModerateForum(actorId) {
   const uid = parseUserId(actorId);
   return uid !== null && FORUM_MOD_IDS.has(uid);
-}
-
-async function getRedis() {
-  const url = process.env.REDIS_URL;
-  if (!url) throw new Error("REDIS_URL missing");
-  if (!client) {
-    client = createClient({ url });
-    client.on("error", (err) => console.error("redis error", err));
-    await client.connect();
-  } else if (!client.isOpen) {
-    await client.connect();
-  }
-  return client;
 }
 
 function catKey(categoryId) {

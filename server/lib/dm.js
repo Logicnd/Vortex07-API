@@ -1,27 +1,11 @@
-import { createClient } from "redis";
+import { getRedis } from "./redis.js";
 import { FORUM_MOD_IDS, canModerateForum } from "./forum.js";
-
-/** @type {import('redis').RedisClientType | null} */
-let client = null;
 
 export const DM_BODY_MAX = 1000;
 export const DM_MODLOG_MAX = 200;
 export const DM_RATE_MS = 1000;
 
 export { FORUM_MOD_IDS, canModerateForum };
-
-async function getRedis() {
-  const url = process.env.REDIS_URL;
-  if (!url) throw new Error("REDIS_URL missing");
-  if (!client) {
-    client = createClient({ url });
-    client.on("error", (err) => console.error("redis error", err));
-    await client.connect();
-  } else if (!client.isOpen) {
-    await client.connect();
-  }
-  return client;
-}
 
 function parseUserId(value) {
   const n = Number(value);

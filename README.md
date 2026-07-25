@@ -4,7 +4,10 @@ Backend for the [Vortex07](https://github.com/Logicnd/Vortex07-Extension) browse
 (forum, DMs, likes, ratings, comments). No Discord / Vortality bot logic.
 
 Deployed at: https://vortex07-api.vercel.app  
-Vercel **Root Directory**: `server`
+Vercel project: **vortex07-api** (Root Directory = `server`). Deploy via Git push to `main` only.
+
+Stability: one shared Redis client (`lib/redis.js`), `lib/**` bundled into functions,
+forum write rate limits, soft GET caps on hot routes, `/health` reports `{ redis: true|false }`.
 
 ## Endpoints
 

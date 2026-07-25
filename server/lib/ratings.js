@@ -1,24 +1,4 @@
-import { createClient } from "redis";
-
-/** @type {import('redis').RedisClientType | null} */
-let client = null;
-
-async function getRedis() {
-  const url = process.env.REDIS_URL;
-  if (!url) {
-    throw new Error("REDIS_URL missing");
-  }
-
-  if (!client) {
-    client = createClient({ url });
-    client.on("error", (err) => console.error("redis error", err));
-    await client.connect();
-  } else if (!client.isOpen) {
-    await client.connect();
-  }
-
-  return client;
-}
+import { getRedis } from "./redis.js";
 
 function upKey(targetId) {
   return `ratings:${targetId}:up`;

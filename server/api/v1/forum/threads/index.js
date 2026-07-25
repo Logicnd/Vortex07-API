@@ -1,4 +1,5 @@
 import { createThread, listThreads } from "../../../../lib/forum.js";
+import { guardRead } from "../../../../lib/read-guard.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -15,6 +16,9 @@ export function OPTIONS() {
 }
 
 export async function GET(request) {
+  const limited = await guardRead(request, "forum-list", { max: 40 });
+  if (limited) return limited;
+
   const url = new URL(request.url);
   const categoryId = url.searchParams.get("category") || "general";
   const limit = Number(url.searchParams.get("limit") || 30);

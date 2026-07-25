@@ -8,6 +8,7 @@ import {
   sendMessage,
   unmuteUser,
 } from "../../../lib/dm.js";
+import { guardRead } from "../../../lib/read-guard.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -59,18 +60,33 @@ export async function GET(request, context) {
 
   try {
     if (op === "inbox") {
+      const limited = await guardRead(request, "dm-inbox", {
+        actorId,
+        max: 30,
+      });
+      if (limited) return limited;
       const result = await listInbox(actorId);
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
     }
 
     if (op === "unread") {
+      const limited = await guardRead(request, "dm-unread", {
+        actorId,
+        max: 30,
+      });
+      if (limited) return limited;
       const result = await getUnreadCount(actorId);
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
     }
 
     if (op === "thread") {
+      const limited = await guardRead(request, "dm-thread", {
+        actorId,
+        max: 40,
+      });
+      if (limited) return limited;
       const result = await getThread(actorId, peerId);
       if (!result.ok) return json(result, result.status || 400);
       return json(result);

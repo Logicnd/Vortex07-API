@@ -1,26 +1,10 @@
-import { createClient } from "redis";
-
-/** @type {import('redis').RedisClientType | null} */
-let client = null;
+import { getRedis } from "./redis.js";
 
 export const COMMENT_BODY_MAX = 1000;
 export const COMMENT_LIST_MAX = 100;
 
 /** Same mods as forum — can delete any place comment. */
 export const COMMENT_MOD_IDS = new Set([1, 15936, 18202, 22795]);
-
-async function getRedis() {
-  const url = process.env.REDIS_URL;
-  if (!url) throw new Error("REDIS_URL missing");
-  if (!client) {
-    client = createClient({ url });
-    client.on("error", (err) => console.error("redis error", err));
-    await client.connect();
-  } else if (!client.isOpen) {
-    await client.connect();
-  }
-  return client;
-}
 
 function listKey(gameId) {
   return `comments:${gameId}`;

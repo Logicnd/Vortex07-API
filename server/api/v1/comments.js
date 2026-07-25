@@ -5,6 +5,7 @@ import {
   parseActorId,
   parseGameId,
 } from "../../lib/comments.js";
+import { guardRead } from "../../lib/read-guard.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -31,6 +32,9 @@ export function OPTIONS() {
 export async function GET(request) {
   const { gameId } = resolve(request);
   if (gameId === null) return json({ ok: false, error: "bad-game" }, 400);
+
+  const limited = await guardRead(request, "comments-list", { max: 40 });
+  if (limited) return limited;
 
   const url = new URL(request.url);
   const limit = Number(url.searchParams.get("limit")) || 50;

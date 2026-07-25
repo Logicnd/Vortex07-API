@@ -1,5 +1,5 @@
-import { createClient } from "redis";
 import { FORUM_MOD_IDS } from "../../../lib/forum.js";
+import { getRedis } from "../../../lib/redis.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -28,12 +28,8 @@ export async function POST(request) {
     return json({ ok: false, error: "forbidden" }, 403);
   }
 
-  const url = process.env.REDIS_URL;
-  if (!url) return json({ ok: false, error: "REDIS_URL missing" }, 500);
-
-  const db = createClient({ url });
-  await db.connect();
   try {
+    const db = await getRedis();
     const raw = await db.get("forum:thread:1");
     if (!raw) return json({ ok: false, error: "thread-missing" }, 404);
     const thread = JSON.parse(raw);
@@ -61,7 +57,11 @@ export async function POST(request) {
     thread.updatedAt = rebuilt[rebuilt.length - 1]?.createdAt || thread.updatedAt;
     await db.set("forum:thread:1", JSON.stringify(thread));
     return json({ ok: true, repaired: true, posts: rebuilt.length });
-  } finally {
-    await db.quit();
+  } catch (err) {
+    console.error("forum repair failed", err);
+    return json(
+      { ok: false, error: "db-error", message: String(err?.message || err) },
+      500,
+    );
   }
 }
