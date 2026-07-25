@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/**/*.js": {
+      "includeFiles": "lib/**"
+    }
+  },
   "rewrites": [
     { "source": "/", "destination": "/api/health" },
     { "source": "/health", "destination": "/api/health" },
