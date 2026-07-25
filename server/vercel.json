@@ -4,6 +4,14 @@
     { "source": "/health", "destination": "/api/health" },
     { "source": "/v1/likes/:targetId", "destination": "/api/v1/likes/:targetId" },
     { "source": "/v1/ratings/:targetId", "destination": "/api/v1/ratings/:targetId" },
+    {
+      "source": "/v1/comments/:gameId/:commentId",
+      "destination": "/api/v1/comments?gameId=:gameId&commentId=:commentId"
+    },
+    {
+      "source": "/v1/comments/:gameId",
+      "destination": "/api/v1/comments?gameId=:gameId"
+    },
     { "source": "/v1/forum/categories", "destination": "/api/v1/forum/categories" },
     { "source": "/v1/forum/rename-author", "destination": "/api/v1/forum/rename-author" },
     { "source": "/v1/forum/repair", "destination": "/api/v1/forum/repair" },
@@ -19,6 +27,20 @@
     {
       "source": "/v1/forum/threads/:threadId/posts/:postId",
       "destination": "/api/v1/forum/threads/:threadId/posts/:postId"
-    }
+    },
+    { "source": "/v1/dm/inbox", "destination": "/api/v1/dm/inbox" },
+    { "source": "/v1/dm/unread", "destination": "/api/v1/dm/unread" },
+    {
+      "source": "/v1/dm/threads/:peerId/messages",
+      "destination": "/api/v1/dm/send?peerId=:peerId"
+    },
+    {
+      "source": "/v1/dm/threads/:peerId",
+      "destination": "/api/v1/dm/thread?peerId=:peerId"
+    },
+    { "source": "/v1/dm/mod/logs", "destination": "/api/v1/dm/mod-logs" },
+    { "source": "/v1/dm/mod/muted", "destination": "/api/v1/dm/mod-muted" },
+    { "source": "/v1/dm/mod/mute", "destination": "/api/v1/dm/mod-mute" },
+    { "source": "/v1/dm/mod/unmute", "destination": "/api/v1/dm/mod-unmute" }
   ]
 }
