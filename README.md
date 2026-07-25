@@ -4,10 +4,14 @@ Backend for the [Vortex07](https://github.com/Logicnd/Vortex07-Extension) browse
 (forum, DMs, likes, ratings, comments). No Discord / Vortality bot logic.
 
 Deployed at: https://vortex07-api.vercel.app  
-Vercel project: **vortex07-api** (Root Directory = `server`). Deploy via Git push to `main` only.
+Vercel project: **vortex07-api** (Root Directory = `server`).
+
+**Deploy only via Git push to `main`.** Do not use truncated MCP/`deploy_to_vercel` file uploads
+(they race git and have wiped routes). Hobby plan allows **≤12** serverless functions under `server/api`.
 
 Stability: one shared Redis client (`lib/redis.js`), `lib/**` bundled into functions,
 forum write rate limits, soft GET caps on hot routes, `/health` reports `{ redis: true|false }`.
+Forum indexes use Redis sorted sets `forum:cat:{category}:threads` — never `FLUSH*` this Redis.
 
 ## Endpoints
 
@@ -29,6 +33,10 @@ forum write rate limits, soft GET caps on hot routes, `/health` reports `{ redis
 | `POST` | `/v1/forum/threads/:id/posts` | `{ body, authorId, authorName }` | reply |
 | `PATCH` | `/v1/forum/threads/:id/posts/:postId` | `{ actorId, body, title? }` | edit own post (`title` only for OP) |
 | `DELETE` | `/v1/forum/threads/:id/posts/:postId` | `{ actorId }` | delete post (author or same mods) |
+| `POST` | `/v1/forum/diagnose` | `{ actorId }` | mod-only: scan `forum:*` key counts (repair hub) |
+| `POST` | `/v1/forum/rebuild-index` | `{ actorId }` | mod-only: rebuild category zsets from thread bodies |
+| `POST` | `/v1/forum/reseed` | `{ actorId }` | mod-only: seed known thread fragments if missing |
+| `POST` | `/v1/forum/repair` | `{ actorId }` | mod-only: repair thread 1 OP if missing |
 | `GET` | `/v1/dm/inbox` | `?actorId=` | DM conversation list |
 | `GET` | `/v1/dm/unread` | `?actorId=` | unread badge count |
 | `GET` | `/v1/dm/threads/:peerId` | `?actorId=` | thread messages (marks read) |
