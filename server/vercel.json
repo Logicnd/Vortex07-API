@@ -41,6 +41,15 @@
     { "source": "/v1/dm/mod/logs", "destination": "/api/v1/dm/mod-logs" },
     { "source": "/v1/dm/mod/muted", "destination": "/api/v1/dm/mod-muted" },
     { "source": "/v1/dm/mod/mute", "destination": "/api/v1/dm/mod-mute" },
-    { "source": "/v1/dm/mod/unmute", "destination": "/api/v1/dm/mod-unmute" }
+    { "source": "/v1/dm/mod/unmute", "destination": "/api/v1/dm/mod-unmute" },
+    { "source": "/v1/economy/wallet", "destination": "/api/v1/economy/wallet" },
+    { "source": "/v1/economy/daily", "destination": "/api/v1/economy/daily" },
+    { "source": "/v1/economy/weekly", "destination": "/api/v1/economy/weekly" },
+    { "source": "/v1/economy/catalog", "destination": "/api/v1/economy/catalog" },
+    { "source": "/v1/economy/buy", "destination": "/api/v1/economy/buy" },
+    { "source": "/v1/economy/equip", "destination": "/api/v1/economy/equip" },
+    { "source": "/v1/economy/me", "destination": "/api/v1/economy/me" },
+    { "source": "/v1/economy/bind/start", "destination": "/api/v1/economy/bind/start" },
+    { "source": "/v1/economy/bind/complete", "destination": "/api/v1/economy/bind/complete" }
   ]
 }
