@@ -1,10 +1,15 @@
 import { createClient } from "redis";
+import { hitRateLimit } from "./rate-limit.js";
 
 /** @type {import('redis').RedisClientType | null} */
 let client = null;
 
 export const FORUM_TITLE_MAX = 120;
 export const FORUM_BODY_MAX = 4000;
+/** One new thread / 15s per user. */
+export const FORUM_THREAD_RATE_MS = 15_000;
+/** One reply / 3s per user. */
+export const FORUM_REPLY_RATE_MS = 3_000;
 
 /** Vortex07 extension developers (+ site owner) may delete any thread/post. */
 export const FORUM_MOD_IDS = new Set([1, 15936, 18202, 22795]);
@@ -130,6 +135,20 @@ export async function createThread({ categoryId, title, body, authorId, authorNa
     return { ok: false, error: "bad-actor", status: 400 };
   }
 
+  const rate = await hitRateLimit(
+    db,
+    `forum:rate:thread:${uid}`,
+    FORUM_THREAD_RATE_MS,
+  );
+  if (rate.limited) {
+    return {
+      ok: false,
+      error: "rate-limited",
+      retryAfter: rate.retryAfterSec,
+      status: 429,
+    };
+  }
+
   const id = String(await nextId(db, "thread"));
   const now = new Date().toISOString();
   const name = cleanText(authorName, 40) || `Player ${uid}`;
@@ -226,6 +245,20 @@ export async function replyToThread({ threadId, body, authorId, authorName }) {
   const uid = parseUserId(authorId);
   if (!cleanBody) return { ok: false, error: "bad-body", status: 400 };
   if (uid === null) return { ok: false, error: "bad-actor", status: 400 };
+
+  const rate = await hitRateLimit(
+    db,
+    `forum:rate:reply:${uid}`,
+    FORUM_REPLY_RATE_MS,
+  );
+  if (rate.limited) {
+    return {
+      ok: false,
+      error: "rate-limited",
+      retryAfter: rate.retryAfterSec,
+      status: 429,
+    };
+  }
 
   const now = new Date().toISOString();
   const post = {

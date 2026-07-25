@@ -1,8 +1,10 @@
 # Vortex07-API
 
-Shared profile likes API for [Vortex07-Extension](https://github.com/Logicnd/Vortex07-Extension).
+Backend for the [Vortex07](https://github.com/Logicnd/Vortex07-Extension) browser extension only
+(forum, DMs, likes, ratings, comments). No Discord / Vortality bot logic.
 
-Deployed at: https://vortex07-api.vercel.app
+Deployed at: https://vortex07-api.vercel.app  
+Vercel **Root Directory**: `server`
 
 ## Endpoints
 
