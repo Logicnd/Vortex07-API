@@ -39,19 +39,19 @@
     },
     {
       "source": "/v1/forum/repair",
-      "destination": "/api/v1/forum/repair"
+      "destination": "/api/v1/forum/repair?action=repair"
     },
     {
       "source": "/v1/forum/reseed",
-      "destination": "/api/v1/forum/reseed"
+      "destination": "/api/v1/forum/repair?action=reseed"
     },
     {
       "source": "/v1/forum/rebuild-index",
-      "destination": "/api/v1/forum/rebuild-index"
+      "destination": "/api/v1/forum/repair?action=rebuild-index"
     },
     {
       "source": "/v1/forum/diagnose",
-      "destination": "/api/v1/forum/diagnose"
+      "destination": "/api/v1/forum/repair?action=diagnose"
     },
     {
       "source": "/v1/forum/threads",
