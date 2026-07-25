@@ -1,16 +1,1 @@
-{
-  "name": "vortex07-api",
-  "version": "0.3.2",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vercel dev",
-    "deploy": "vercel --prod"
-  },
-  "dependencies": {
-    "redis": "^4.7.1"
-  },
-  "devDependencies": {
-    "vercel": "^44.0.0"
-  }
-}
+{"name":"vortex07-api","version":"0.3.0","private":true,"type":"module","dependencies":{"redis":"^4.7.1"}}
