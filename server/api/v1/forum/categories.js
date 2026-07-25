@@ -1,4 +1,4 @@
-import { pingRedis } from "../lib/redis.js";
+import { listCategories } from "../../../lib/forum.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -10,14 +10,9 @@ export function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS });
 }
 
-export async function GET() {
-  const redis = await pingRedis();
+export function GET() {
   return Response.json(
-    {
-      ok: true,
-      service: "vortex07-api",
-      redis,
-    },
-    { status: redis ? 200 : 503, headers: CORS },
+    { ok: true, categories: listCategories() },
+    { headers: CORS },
   );
 }

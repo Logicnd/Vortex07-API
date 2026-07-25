@@ -1,1 +1,51 @@
-{"rewrites":[{"source":"/","destination":"/api/health"},{"source":"/health","destination":"/api/health"},{"source":"/v1/likes/:targetId","destination":"/api/v1/likes/:targetId"},{"source":"/v1/ratings/:targetId","destination":"/api/v1/ratings/:targetId"},{"source":"/v1/comments/:gameId/:commentId","destination":"/api/v1/comments?gameId=:gameId&commentId=:commentId"},{"source":"/v1/comments/:gameId","destination":"/api/v1/comments?gameId=:gameId"},{"source":"/v1/forum/categories","destination":"/api/v1/forum/categories"},{"source":"/v1/forum/threads","destination":"/api/v1/forum/threads"},{"source":"/v1/dm/inbox","destination":"/api/v1/dm/inbox"},{"source":"/v1/dm/unread","destination":"/api/v1/dm/unread"},{"source":"/v1/dm/threads/:peerId/messages","destination":"/api/v1/dm/send?peerId=:peerId"},{"source":"/v1/dm/threads/:peerId","destination":"/api/v1/dm/thread?peerId=:peerId"},{"source":"/v1/economy/wallet","destination":"/api/v1/economy/wallet"},{"source":"/v1/economy/daily","destination":"/api/v1/economy/daily"},{"source":"/v1/economy/weekly","destination":"/api/v1/economy/weekly"},{"source":"/v1/economy/catalog","destination":"/api/v1/economy/catalog"},{"source":"/v1/economy/buy","destination":"/api/v1/economy/buy"},{"source":"/v1/economy/equip","destination":"/api/v1/economy/equip"},{"source":"/v1/economy/me","destination":"/api/v1/economy/me"},{"source":"/v1/economy/bind/start","destination":"/api/v1/economy/bind-start"},{"source":"/v1/economy/bind/complete","destination":"/api/v1/economy/bind-complete"}]}
+{
+  "functions": {
+    "api/**/*.js": {
+      "includeFiles": "lib/**"
+    }
+  },
+  "rewrites": [
+    { "source": "/", "destination": "/api/health" },
+    { "source": "/health", "destination": "/api/health" },
+    { "source": "/v1/likes/:targetId", "destination": "/api/v1/likes/:targetId" },
+    { "source": "/v1/ratings/:targetId", "destination": "/api/v1/ratings/:targetId" },
+    {
+      "source": "/v1/comments/:gameId/:commentId",
+      "destination": "/api/v1/comments?gameId=:gameId&commentId=:commentId"
+    },
+    {
+      "source": "/v1/comments/:gameId",
+      "destination": "/api/v1/comments?gameId=:gameId"
+    },
+    { "source": "/v1/forum/categories", "destination": "/api/v1/forum/categories" },
+    { "source": "/v1/forum/rename-author", "destination": "/api/v1/forum/rename-author" },
+    { "source": "/v1/forum/repair", "destination": "/api/v1/forum/repair" },
+    { "source": "/v1/forum/threads", "destination": "/api/v1/forum/threads" },
+    {
+      "source": "/v1/forum/threads/:threadId",
+      "destination": "/api/v1/forum/threads/:threadId"
+    },
+    {
+      "source": "/v1/forum/threads/:threadId/posts",
+      "destination": "/api/v1/forum/threads/:threadId/posts"
+    },
+    {
+      "source": "/v1/forum/threads/:threadId/posts/:postId",
+      "destination": "/api/v1/forum/threads/:threadId/posts/:postId"
+    },
+    { "source": "/v1/dm/inbox", "destination": "/api/v1/dm/inbox" },
+    { "source": "/v1/dm/unread", "destination": "/api/v1/dm/unread" },
+    {
+      "source": "/v1/dm/threads/:peerId/messages",
+      "destination": "/api/v1/dm/send?peerId=:peerId"
+    },
+    {
+      "source": "/v1/dm/threads/:peerId",
+      "destination": "/api/v1/dm/thread?peerId=:peerId"
+    },
+    { "source": "/v1/dm/mod/logs", "destination": "/api/v1/dm/mod-logs" },
+    { "source": "/v1/dm/mod/muted", "destination": "/api/v1/dm/mod-muted" },
+    { "source": "/v1/dm/mod/mute", "destination": "/api/v1/dm/mod-mute" },
+    { "source": "/v1/dm/mod/unmute", "destination": "/api/v1/dm/mod-unmute" }
+  ]
+}
