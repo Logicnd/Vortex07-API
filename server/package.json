@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vercel dev",
-    "deploy": "vercel --prod"
+    "deploy": "vercel --prod",
+    "backup": "node scripts/backup-redis.mjs",
+    "backup:forum": "node scripts/backup-redis.mjs forum:*",
+    "restore": "node scripts/restore-redis.mjs",
+    "wipe:forum": "node scripts/wipe-forum.mjs"
   },
   "dependencies": {
     "redis": "^4.7.1"
