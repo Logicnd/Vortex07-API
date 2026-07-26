@@ -207,12 +207,6 @@ export async function canonicalUsername(userId) {
   return null;
 }
 
-/**
- * Resolve author for writes. Server owns the display name.
- *
- * Preferred: sessionCookie → playvortex /me (authorId cannot be forged).
- * Fallback (legacy clients): live/bound/known name only — never trust client claim.
- */
 /** Read session cookie from JSON body and/or request header (never logged). */
 export function sessionCookieFrom(request, body = {}) {
   const fromBody = String(body?.sessionCookie || "").trim();
@@ -224,6 +218,16 @@ export function sessionCookieFrom(request, body = {}) {
   }
 }
 
+/**
+ * Resolve author for writes. Server owns the display name.
+ *
+ * Session cookie verify is best-effort only — playvortex often rejects
+ * Vercel datacenter IPs (bad-session). Real clients should stamp authorId
+ * from a same-origin /me fetch in the extension background.
+ *
+ * Name lock: live → bound → known → careful first-claim (never placeholders /
+ * reserved names). Owner id 1 (TheHaloDeveloper) is allowed via known bind.
+ */
 export async function resolveAuthor({
   authorId,
   authorName,
@@ -242,8 +246,7 @@ export async function resolveAuthor({
         source: "session",
       };
     }
-    // Cookie present but playvortex rejected it (common from Vercel IPs).
-    // Fall through to name-lock instead of hard-failing real users.
+    // Never hard-fail here — CF/Vercel IP blocks are common.
     if (requireSession) {
       return { ok: false, error: "bad-session", status: 401 };
     }
@@ -251,17 +254,9 @@ export async function resolveAuthor({
     return { ok: false, error: "session-required", status: 401 };
   }
 
-  // Name lock: live / bound / known win. Client authorName is never trusted
-  // once an id is known. High ids may bind once to a free non-placeholder name.
   const uid = parseUserId(authorId);
   if (uid === null) {
     return { ok: false, error: "bad-actor", status: 400 };
-  }
-
-  // Low platform ids (1..999) cannot be used without a verified browser session.
-  // Otherwise anyone can post as TheHaloDeveloper via known/bound names.
-  if (uid < 1000) {
-    return { ok: false, error: "identity-unverified", status: 403 };
   }
 
   const live = await fetchPlayvortexUsername(uid);
@@ -279,6 +274,12 @@ export async function resolveAuthor({
   if (known) {
     await setBoundUsername(uid, known);
     return { ok: true, authorId: uid, authorName: known, source: "known" };
+  }
+
+  // Low ids with no known/bound/live identity: reject (stops 1..99 flood claims).
+  // Id 1 is seeded as TheHaloDeveloper above via KNOWN_IDENTITIES.
+  if (uid < 1000) {
+    return { ok: false, error: "identity-unverified", status: 403 };
   }
 
   const claimed = cleanUsername(authorName);
