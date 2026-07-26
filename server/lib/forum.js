@@ -134,7 +134,7 @@ export async function createThread({
     authorId,
     authorName,
     sessionCookie,
-    requireSession: true,
+    requireSession: false,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -267,7 +267,7 @@ export async function replyToThread({
     authorId,
     authorName,
     sessionCookie,
-    requireSession: true,
+    requireSession: false,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;

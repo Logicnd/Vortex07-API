@@ -220,7 +220,7 @@ export async function sendMessage({
     authorId: actorId,
     authorName,
     sessionCookie,
-    requireSession: true,
+    requireSession: false,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;

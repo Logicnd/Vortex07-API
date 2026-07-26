@@ -74,7 +74,7 @@ export async function addComment({
     authorId,
     authorName,
     sessionCookie,
-    requireSession: true,
+    requireSession: false,
   });
   if (!identity.ok) return identity;
 

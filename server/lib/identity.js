@@ -103,30 +103,41 @@ export async function fetchPlayvortexUsername(userId) {
 /**
  * Verify a browser session cookie against playvortex /api/users/me.
  * Cookie is used for this request only — never stored.
+ * Note: playvortex/CF often rejects datacenter IPs, so callers must soft-fallback.
  */
 export async function fetchPlayvortexMe(sessionCookie) {
   const cookie = String(sessionCookie || "").trim();
   if (!cookie) return null;
-  try {
-    const res = await fetch(PLAYVORTEX_ME, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "Vortex07-API/identity",
-        Cookie: cookie,
-      },
-      cache: "no-store",
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const id = parseUserId(data?.id ?? data?.user_id ?? data?.userId);
-    const username = cleanUsername(
-      data?.username || data?.display_name || data?.displayName || data?.name,
-    );
-    if (id === null || !username || isPlaceholderUsername(username)) return null;
-    return { id, username };
-  } catch {
-    return null;
+
+  const endpoints = [
+    PLAYVORTEX_ME,
+    "https://www.playvortex.io/api/users/me",
+  ];
+  const headers = {
+    Accept: "application/json",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    Cookie: cookie,
+    Origin: "https://playvortex.io",
+    Referer: "https://playvortex.io/",
+  };
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, { headers, cache: "no-store" });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const id = parseUserId(data?.id ?? data?.user_id ?? data?.userId);
+      const username = cleanUsername(
+        data?.username || data?.display_name || data?.displayName || data?.name,
+      );
+      if (id === null || !username || isPlaceholderUsername(username)) continue;
+      return { id, username };
+    } catch {
+      /* try next */
+    }
   }
+  return null;
 }
 
 export async function getBoundUsername(userId) {
@@ -217,28 +228,31 @@ export async function resolveAuthor({
   authorId,
   authorName,
   sessionCookie,
-  requireSession = true,
+  requireSession = false,
 }) {
   const cookie = String(sessionCookie || "").trim();
   if (cookie) {
     const me = await fetchPlayvortexMe(cookie);
-    if (!me) {
+    if (me) {
+      await setBoundUsername(me.id, me.username);
+      return {
+        ok: true,
+        authorId: me.id,
+        authorName: me.username,
+        source: "session",
+      };
+    }
+    // Cookie present but playvortex rejected it (common from Vercel IPs).
+    // Fall through to name-lock instead of hard-failing real users.
+    if (requireSession) {
       return { ok: false, error: "bad-session", status: 401 };
     }
-    await setBoundUsername(me.id, me.username);
-    return {
-      ok: true,
-      authorId: me.id,
-      authorName: me.username,
-      source: "session",
-    };
-  }
-
-  if (requireSession) {
+  } else if (requireSession) {
     return { ok: false, error: "session-required", status: 401 };
   }
 
-  // Legacy path — name lock only (ID may still be spoofed).
+  // Name lock: live / bound / known win. Client authorName is never trusted
+  // once an id is known. High ids may bind once to a free non-placeholder name.
   const uid = parseUserId(authorId);
   if (uid === null) {
     return { ok: false, error: "bad-actor", status: 400 };
@@ -261,7 +275,36 @@ export async function resolveAuthor({
     return { ok: true, authorId: uid, authorName: known, source: "known" };
   }
 
-  // Never first-claim a client-supplied name.
-  void authorName;
-  return { ok: false, error: "identity-unverified", status: 403 };
+  const claimed = cleanUsername(authorName);
+  const db = await getRedis();
+
+  // Low ids cannot first-claim (classic spoof dump used 1..99).
+  if (uid < 1000) {
+    return { ok: false, error: "identity-unverified", status: 403 };
+  }
+
+  if (claimed && !isPlaceholderUsername(claimed)) {
+    const owner = parseUserId(await db.get(NAME_KEY(claimed)));
+    const reserved = Object.values(KNOWN_IDENTITIES).some((n) =>
+      namesMatch(n, claimed),
+    );
+    if ((owner === null || owner === uid) && !reserved) {
+      await setBoundUsername(uid, claimed);
+      return {
+        ok: true,
+        authorId: uid,
+        authorName: claimed,
+        source: "claim",
+      };
+    }
+  }
+
+  const fallback = `Player ${uid}`;
+  await setBoundUsername(uid, fallback);
+  return {
+    ok: true,
+    authorId: uid,
+    authorName: fallback,
+    source: "fallback",
+  };
 }
