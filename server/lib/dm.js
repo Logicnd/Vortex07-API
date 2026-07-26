@@ -1,5 +1,10 @@
 import { getRedis } from "./redis.js";
 import { FORUM_MOD_IDS, canModerateForum } from "./forum.js";
+import {
+  resolveAuthor,
+  cleanUsername,
+  isPlaceholderUsername,
+} from "./identity.js";
 
 export const DM_BODY_MAX = 1000;
 export const DM_MODLOG_MAX = 200;
@@ -219,6 +224,13 @@ export async function sendMessage({
     return { ok: false, error: "peer-muted", status: 403 };
   }
 
+  const identity = await resolveAuthor({ authorId: uid, authorName });
+  if (!identity.ok) return identity;
+  const name = identity.authorName;
+  const peerLabelRaw = cleanUsername(peerName);
+  const peerLabel =
+    peerLabelRaw && !isPlaceholderUsername(peerLabelRaw) ? peerLabelRaw : "";
+
   const db = await getRedis();
 
   // Simple rate limit
@@ -233,8 +245,6 @@ export async function sendMessage({
   // One conversation per unordered pair (min:max) — never duplicated.
   const tid = threadIdFor(uid, peer);
   const now = new Date().toISOString();
-  const name = cleanText(authorName, 40) || `Player ${uid}`;
-  const peerLabel = cleanText(peerName, 40);
 
   let meta = null;
   const existing = await db.get(threadKey(tid));

@@ -1,4 +1,5 @@
 import { getRedis } from "./redis.js";
+import { resolveAuthor } from "./identity.js";
 
 export const COMMENT_BODY_MAX = 1000;
 export const COMMENT_LIST_MAX = 100;
@@ -58,22 +59,20 @@ export async function listComments(gameId, limit = 50, offset = 0) {
 
 export async function addComment({ gameId, body, authorId, authorName }) {
   const db = await getRedis();
-  const uid = parseActorId(authorId);
   const cleanBody = cleanText(body, COMMENT_BODY_MAX);
-  if (uid === null) {
-    return { ok: false, error: "bad-actor", status: 400 };
-  }
   if (!cleanBody) {
     return { ok: false, error: "bad-body", status: 400 };
   }
 
+  const identity = await resolveAuthor({ authorId, authorName });
+  if (!identity.ok) return identity;
+
   const now = new Date().toISOString();
-  const name = cleanText(authorName, 40) || `Player ${uid}`;
   const comment = {
     id: String(await nextId(db)),
     gameId,
-    authorId: uid,
-    authorName: name,
+    authorId: identity.authorId,
+    authorName: identity.authorName,
     body: cleanBody,
     createdAt: now,
   };

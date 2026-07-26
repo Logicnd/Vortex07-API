@@ -2,6 +2,7 @@ import {
   canModerateForum,
   diagnoseForumKeys,
   FORUM_MOD_IDS,
+  purgeSpoofedForum,
   rebuildForumIndex,
   reseedKnownForumThreads,
 } from "../../../lib/forum.js";
@@ -26,9 +27,9 @@ function resolveAction(request, body) {
   const fromQuery = url.searchParams.get("action");
   if (fromQuery) return String(fromQuery).toLowerCase();
   if (body?.action) return String(body.action).toLowerCase();
-  // Path aliases: /v1/forum/diagnose|rebuild-index|reseed|repair
+  // Path aliases: /v1/forum/diagnose|rebuild-index|reseed|repair|purge-spoof
   const m = url.pathname.match(
-    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair)\/?$/i,
+    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof)\/?$/i,
   );
   if (m) return m[1].toLowerCase();
   return "repair";
@@ -69,7 +70,7 @@ async function repairThread1Op() {
 
 /**
  * Mod-only forum maintenance hub (Hobby-safe: one serverless function).
- * Actions: repair | diagnose | rebuild-index | reseed
+ * Actions: repair | diagnose | rebuild-index | reseed | purge-spoof
  */
 export async function POST(request) {
   let body = {};
@@ -98,6 +99,9 @@ export async function POST(request) {
     }
     if (action === "reseed") {
       return json(await reseedKnownForumThreads());
+    }
+    if (action === "purge-spoof" || action === "purge") {
+      return json(await purgeSpoofedForum());
     }
     // default: legacy thread-1 OP repair
     const result = await repairThread1Op();

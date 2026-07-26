@@ -54,6 +54,10 @@
       "destination": "/api/v1/forum/repair?action=diagnose"
     },
     {
+      "source": "/v1/forum/purge-spoof",
+      "destination": "/api/v1/forum/repair?action=purge-spoof"
+    },
+    {
       "source": "/v1/forum/threads",
       "destination": "/api/v1/forum/threads"
     },

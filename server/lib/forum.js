@@ -1,5 +1,14 @@
 ﻿import { getRedis } from "./redis.js";
 import { hitRateLimit } from "./rate-limit.js";
+import {
+  cleanUsername,
+  isPlaceholderUsername,
+  namesMatch,
+  parseUserId as parseIdentityId,
+  resolveAuthor,
+  setBoundUsername,
+  getBoundUsername,
+} from "./identity.js";
 
 export const FORUM_TITLE_MAX = 120;
 export const FORUM_BODY_MAX = 4000;
@@ -48,9 +57,7 @@ export function listCategories() {
 }
 
 function parseUserId(value) {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 1) return null;
-  return n;
+  return parseIdentityId(value);
 }
 
 function cleanText(value, max) {
@@ -111,13 +118,14 @@ export async function createThread({ categoryId, title, body, authorId, authorNa
   const cat = normalizeCategoryId(categoryId);
   const cleanTitle = cleanText(title, FORUM_TITLE_MAX);
   const cleanBody = cleanText(body, FORUM_BODY_MAX);
-  const uid = parseUserId(authorId);
   if (!cleanTitle || !cleanBody) {
     return { ok: false, error: "bad-body", status: 400 };
   }
-  if (uid === null) {
-    return { ok: false, error: "bad-actor", status: 400 };
-  }
+
+  const identity = await resolveAuthor({ authorId, authorName });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+  const name = identity.authorName;
 
   const rate = await hitRateLimit(
     db,
@@ -135,7 +143,6 @@ export async function createThread({ categoryId, title, body, authorId, authorNa
 
   const id = String(await nextId(db, "thread"));
   const now = new Date().toISOString();
-  const name = cleanText(authorName, 40) || `Player ${uid}`;
   const thread = {
     id,
     categoryId: cat,
@@ -162,14 +169,23 @@ export async function createThread({ categoryId, title, body, authorId, authorNa
   return { ok: true, thread, posts: [op] };
 }
 
-export async function renameAuthor({ authorId, authorName }) {
-  const db = await getRedis();
+/**
+ * Mod-only: rebind an author's stored display name after identity checks.
+ * Open rename was a spoof vector (any client could rewrite any authorId).
+ */
+export async function renameAuthor({ authorId, authorName, actorId }) {
+  if (!canModerateForum(actorId)) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
   const uid = parseUserId(authorId);
-  const name = cleanText(authorName, 40);
-  if (uid === null || !name) {
+  const name = cleanUsername(authorName);
+  if (uid === null || !name || isPlaceholderUsername(name)) {
     return { ok: false, error: "bad-actor", status: 400 };
   }
 
+  await setBoundUsername(uid, name);
+
+  const db = await getRedis();
   let updated = 0;
   for (const cat of FORUM_CATEGORIES) {
     const ids = await db.zRange(catKey(cat.id), 0, -1);
@@ -226,9 +242,12 @@ export async function replyToThread({ threadId, body, authorId, authorName }) {
   }
 
   const cleanBody = cleanText(body, FORUM_BODY_MAX);
-  const uid = parseUserId(authorId);
   if (!cleanBody) return { ok: false, error: "bad-body", status: 400 };
-  if (uid === null) return { ok: false, error: "bad-actor", status: 400 };
+
+  const identity = await resolveAuthor({ authorId, authorName });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+  const name = identity.authorName;
 
   const rate = await hitRateLimit(
     db,
@@ -249,7 +268,7 @@ export async function replyToThread({ threadId, body, authorId, authorName }) {
     id: String(await nextId(db, "post")),
     threadId: id,
     authorId: uid,
-    authorName: cleanText(authorName, 40) || `Player ${uid}`,
+    authorName: name,
     body: cleanBody,
     createdAt: now,
   };
@@ -631,4 +650,167 @@ export async function reseedKnownForumThreads() {
   const rebuild = await rebuildForumIndex();
   return { ok: true, created, rebuild };
 }
+
+/**
+ * Scan all forum posts, bind consistent high-trust names, and remove spoofs:
+ * - placeholder / repeated-char names
+ * - authorIds with conflicting names (keep majority non-placeholder)
+ * - low-id one-shot flood posts (classic old-API spoof dump)
+ */
+export async function purgeSpoofedForum() {
+  const db = await getRedis();
+  const nameCounts = new Map(); // id -> Map(nameLower -> { name, count })
+  const idPostCount = new Map();
+  const threadMeta = [];
+
+  for (const cat of FORUM_CATEGORIES) {
+    const ids = await db.zRange(catKey(cat.id), 0, -1);
+    for (const id of ids) {
+      const raw = await db.get(threadKey(id));
+      if (!raw) continue;
+      let thread;
+      try {
+        thread = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      const posts = [];
+      for (const row of await db.lRange(postsKey(id), 0, -1)) {
+        try {
+          posts.push(JSON.parse(row));
+        } catch {
+          /* skip */
+        }
+      }
+      threadMeta.push({ id: String(id), cat: cat.id, thread, posts });
+
+      for (const post of posts) {
+        const uid = parseUserId(post.authorId);
+        if (uid === null) continue;
+        idPostCount.set(uid, (idPostCount.get(uid) || 0) + 1);
+        const name = cleanUsername(post.authorName) || `Player ${uid}`;
+        const key = name.toLowerCase();
+        if (!nameCounts.has(uid)) nameCounts.set(uid, new Map());
+        const bucket = nameCounts.get(uid);
+        const cur = bucket.get(key) || { name, count: 0 };
+        cur.count += 1;
+        bucket.set(key, cur);
+      }
+    }
+  }
+
+  // Pick canonical name per id (majority non-placeholder). Bind trusted ones.
+  const canonical = new Map();
+  for (const [uid, bucket] of nameCounts.entries()) {
+    const ranked = [...bucket.values()].sort((a, b) => b.count - a.count);
+    const good = ranked.find((r) => !isPlaceholderUsername(r.name));
+    if (good && (good.count >= 2 || uid >= 1000 || FORUM_MOD_IDS.has(uid))) {
+      canonical.set(uid, good.name);
+      await setBoundUsername(uid, good.name);
+    } else if (good && ranked.length === 1 && uid >= 1000) {
+      canonical.set(uid, good.name);
+      await setBoundUsername(uid, good.name);
+    }
+  }
+
+  // Seed known mods from existing data if present
+  for (const uid of FORUM_MOD_IDS) {
+    const bound = await getBoundUsername(uid);
+    if (bound) canonical.set(uid, bound);
+  }
+
+  let removedPosts = 0;
+  let rewritten = 0;
+  let removedThreads = 0;
+  const removedSample = [];
+
+  function isSpoofPost(post, threadPostCount) {
+    const uid = parseUserId(post.authorId);
+    const name = cleanUsername(post.authorName);
+    if (uid === null) return true;
+    if (isPlaceholderUsername(name)) return true;
+
+    const canon = canonical.get(uid);
+    if (canon && !namesMatch(name, canon)) return true;
+
+    const variants = nameCounts.get(uid);
+    if (variants && variants.size > 1 && !canon) {
+      // Conflicting names and no trustworthy canonical → drop all
+      return true;
+    }
+
+    // Low-id one-shot flood (old open API dump)
+    if (
+      uid < 1000 &&
+      !FORUM_MOD_IDS.has(uid) &&
+      (idPostCount.get(uid) || 0) <= 2 &&
+      threadPostCount >= 20
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  for (const entry of threadMeta) {
+    const { id, thread, posts } = entry;
+    const kept = [];
+    for (const post of posts) {
+      if (isSpoofPost(post, posts.length)) {
+        removedPosts += 1;
+        if (removedSample.length < 40) {
+          removedSample.push({
+            threadId: id,
+            postId: post.id,
+            authorId: post.authorId,
+            authorName: post.authorName,
+          });
+        }
+        continue;
+      }
+      const uid = parseUserId(post.authorId);
+      const canon = uid !== null ? canonical.get(uid) : null;
+      if (canon && !namesMatch(post.authorName, canon)) {
+        post.authorName = canon;
+        rewritten += 1;
+      }
+      kept.push(post);
+    }
+
+    if (kept.length === 0) {
+      const cat = normalizeCategoryId(thread.categoryId);
+      await db.del(threadKey(id));
+      await db.del(postsKey(id));
+      await db.zRem(catKey(cat), id);
+      removedThreads += 1;
+      continue;
+    }
+
+    // If OP was removed, promote first kept post as OP metadata
+    const op = kept[0];
+    thread.authorId = op.authorId;
+    thread.authorName = op.authorName;
+    thread.replyCount = Math.max(0, kept.length - 1);
+    thread.updatedAt =
+      kept[kept.length - 1]?.createdAt || thread.updatedAt || thread.createdAt;
+
+    await db.del(postsKey(id));
+    if (kept.length) {
+      await db.rPush(postsKey(id), ...kept.map((p) => JSON.stringify(p)));
+    }
+    await db.set(threadKey(id), JSON.stringify(thread));
+  }
+
+  const rebuild = await rebuildForumIndex();
+  return {
+    ok: true,
+    removedPosts,
+    rewritten,
+    removedThreads,
+    boundUsers: canonical.size,
+    removedSample,
+    rebuild,
+  };
+}
+
 

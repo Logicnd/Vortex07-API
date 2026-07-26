@@ -26,6 +26,7 @@ export async function POST(request) {
     const result = await renameAuthor({
       authorId: body.authorId,
       authorName: body.authorName,
+      actorId: body.actorId,
     });
     if (!result.ok) return json(result, result.status || 400);
     return json(result);
