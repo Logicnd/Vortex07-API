@@ -102,11 +102,22 @@ export async function setBoundUsername(userId, username) {
   return true;
 }
 
+export async function clearBoundUsername(userId) {
+  const uid = parseUserId(userId);
+  if (uid === null) return false;
+  const db = await getRedis();
+  const prev = cleanUsername(await db.get(BIND_KEY(uid)));
+  await db.del(BIND_KEY(uid));
+  if (prev) await db.del(NAME_KEY(prev));
+  return true;
+}
+
 /**
  * Resolve a trusted author identity for writes.
  * - Live playvortex username wins when available
  * - Else existing Redis binding must match claimed name
- * - Else first claim binds the cleaned name
+ * - Else first claim binds the cleaned name (high ids only; low ids need live)
+ * Claimed name is required — placeholders are always rejected.
  */
 export async function resolveAuthor({ authorId, authorName }) {
   const uid = parseUserId(authorId);
@@ -115,11 +126,15 @@ export async function resolveAuthor({ authorId, authorName }) {
   }
 
   const claimed = cleanUsername(authorName);
+  if (!claimed || isPlaceholderUsername(claimed)) {
+    return { ok: false, error: "bad-author-name", status: 400 };
+  }
+
   const live = await fetchPlayvortexUsername(uid);
 
   if (live) {
     await setBoundUsername(uid, live);
-    if (claimed && !isPlaceholderUsername(claimed) && !namesMatch(claimed, live)) {
+    if (!namesMatch(claimed, live)) {
       return {
         ok: false,
         error: "name-mismatch",
@@ -133,7 +148,7 @@ export async function resolveAuthor({ authorId, authorName }) {
 
   const bound = await getBoundUsername(uid);
   if (bound) {
-    if (claimed && !isPlaceholderUsername(claimed) && !namesMatch(claimed, bound)) {
+    if (!namesMatch(claimed, bound)) {
       return {
         ok: false,
         error: "name-mismatch",
@@ -145,9 +160,14 @@ export async function resolveAuthor({ authorId, authorName }) {
     return { ok: true, authorId: uid, authorName: bound, source: "bound" };
   }
 
-  // First claim — reject empty / spam placeholders
-  if (!claimed || isPlaceholderUsername(claimed)) {
-    return { ok: false, error: "bad-author-name", status: 400 };
+  // Low ids are easy spoof targets without live verification.
+  if (uid < 1000) {
+    return {
+      ok: false,
+      error: "identity-unverified",
+      status: 403,
+      authorId: uid,
+    };
   }
 
   // Name already bound to a different id?

@@ -8,6 +8,7 @@ import {
   resolveAuthor,
   setBoundUsername,
   getBoundUsername,
+  clearBoundUsername,
 } from "./identity.js";
 
 export const FORUM_TITLE_MAX = 120;
@@ -700,23 +701,17 @@ export async function purgeSpoofedForum() {
   }
 
   // Pick canonical name per id (majority non-placeholder). Bind trusted ones.
+  // Never bind ids that had conflicting names — that re-locks spoofs in place.
   const canonical = new Map();
   for (const [uid, bucket] of nameCounts.entries()) {
-    const ranked = [...bucket.values()].sort((a, b) => b.count - a.count);
-    const good = ranked.find((r) => !isPlaceholderUsername(r.name));
-    if (good && (good.count >= 2 || uid >= 1000 || FORUM_MOD_IDS.has(uid))) {
-      canonical.set(uid, good.name);
-      await setBoundUsername(uid, good.name);
-    } else if (good && ranked.length === 1 && uid >= 1000) {
-      canonical.set(uid, good.name);
-      await setBoundUsername(uid, good.name);
-    }
-  }
-
-  // Seed known mods from existing data if present
-  for (const uid of FORUM_MOD_IDS) {
-    const bound = await getBoundUsername(uid);
-    if (bound) canonical.set(uid, bound);
+    if (bucket.size !== 1) continue;
+    const only = [...bucket.values()][0];
+    if (isPlaceholderUsername(only.name)) continue;
+    // Prefer established accounts; skip low-id one-offs left after spam
+    if (uid < 1000 && only.count < 2 && !FORUM_MOD_IDS.has(uid)) continue;
+    if (uid < 1000 && FORUM_MOD_IDS.has(uid) && only.count < 2) continue;
+    canonical.set(uid, only.name);
+    await setBoundUsername(uid, only.name);
   }
 
   let removedPosts = 0;

@@ -6,6 +6,7 @@ import {
   rebuildForumIndex,
   reseedKnownForumThreads,
 } from "../../../lib/forum.js";
+import { clearBoundUsername } from "../../../lib/identity.js";
 import { getRedis } from "../../../lib/redis.js";
 
 const CORS = {
@@ -101,6 +102,10 @@ export async function POST(request) {
       return json(await reseedKnownForumThreads());
     }
     if (action === "purge-spoof" || action === "purge") {
+      // Drop poisoned low-id bindings from earlier spoof dumps before rebinding.
+      for (const uid of [1, 2]) {
+        await clearBoundUsername(uid).catch(() => {});
+      }
       return json(await purgeSpoofedForum());
     }
     // default: legacy thread-1 OP repair
