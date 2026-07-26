@@ -258,6 +258,12 @@ export async function resolveAuthor({
     return { ok: false, error: "bad-actor", status: 400 };
   }
 
+  // Low platform ids (1..999) cannot be used without a verified browser session.
+  // Otherwise anyone can post as TheHaloDeveloper via known/bound names.
+  if (uid < 1000) {
+    return { ok: false, error: "identity-unverified", status: 403 };
+  }
+
   const live = await fetchPlayvortexUsername(uid);
   if (live) {
     await setBoundUsername(uid, live);
@@ -277,11 +283,6 @@ export async function resolveAuthor({
 
   const claimed = cleanUsername(authorName);
   const db = await getRedis();
-
-  // Low ids cannot first-claim (classic spoof dump used 1..99).
-  if (uid < 1000) {
-    return { ok: false, error: "identity-unverified", status: 403 };
-  }
 
   if (claimed && !isPlaceholderUsername(claimed)) {
     const owner = parseUserId(await db.get(NAME_KEY(claimed)));
