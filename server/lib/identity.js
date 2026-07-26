@@ -1,6 +1,6 @@
 /**
- * Bind playvortex user id → canonical username.
- * Prevents forum/DM/comment spoofing where clients invent authorId/authorName.
+ * Server-owned author identity: authorId → canonical username.
+ * Clients cannot override a bound/live name — any extension version is ignored.
  */
 import { getRedis } from "./redis.js";
 
@@ -34,7 +34,7 @@ export function isPlaceholderUsername(name) {
     n === "my profile" ||
     n === "guest" ||
     /^player\s+\d+$/i.test(n) ||
-    /^(.)\1{7,}$/i.test(n) // aaaaaaaa / !!!!!!!!
+    /^(.)\1{7,}$/i.test(n)
   );
 }
 
@@ -42,7 +42,7 @@ export function namesMatch(a, b) {
   return cleanUsername(a).toLowerCase() === cleanUsername(b).toLowerCase();
 }
 
-async function fetchPlayvortexUsername(userId) {
+export async function fetchPlayvortexUsername(userId) {
   const uid = parseUserId(userId);
   if (uid === null) return null;
 
@@ -113,11 +113,25 @@ export async function clearBoundUsername(userId) {
 }
 
 /**
- * Resolve a trusted author identity for writes.
- * - Live playvortex username wins when available
- * - Else existing Redis binding must match claimed name
- * - Else first claim binds the cleaned name (high ids only; low ids need live)
- * Claimed name is required — placeholders are always rejected.
+ * Canonical username for an id (live → bound → null).
+ * Used by repair jobs and writes.
+ */
+export async function canonicalUsername(userId) {
+  const uid = parseUserId(userId);
+  if (uid === null) return null;
+  const live = await fetchPlayvortexUsername(uid);
+  if (live) {
+    await setBoundUsername(uid, live);
+    return live;
+  }
+  return getBoundUsername(uid);
+}
+
+/**
+ * Resolve author for writes. Server owns the display name.
+ * - Live / bound name always wins (client authorName is ignored)
+ * - Unbound: first valid non-placeholder claim binds; else Player {id}
+ * Old extension versions cannot override a bound name.
  */
 export async function resolveAuthor({ authorId, authorName }) {
   const uid = parseUserId(authorId);
@@ -125,64 +139,44 @@ export async function resolveAuthor({ authorId, authorName }) {
     return { ok: false, error: "bad-actor", status: 400 };
   }
 
-  const claimed = cleanUsername(authorName);
-  if (!claimed || isPlaceholderUsername(claimed)) {
-    return { ok: false, error: "bad-author-name", status: 400 };
-  }
-
   const live = await fetchPlayvortexUsername(uid);
-
   if (live) {
     await setBoundUsername(uid, live);
-    if (!namesMatch(claimed, live)) {
-      return {
-        ok: false,
-        error: "name-mismatch",
-        status: 403,
-        expected: live,
-        authorId: uid,
-      };
-    }
     return { ok: true, authorId: uid, authorName: live, source: "live" };
   }
 
   const bound = await getBoundUsername(uid);
   if (bound) {
-    if (!namesMatch(claimed, bound)) {
-      return {
-        ok: false,
-        error: "name-mismatch",
-        status: 403,
-        expected: bound,
-        authorId: uid,
-      };
-    }
+    // Bound name is authoritative — ignore whatever the client sent.
     return { ok: true, authorId: uid, authorName: bound, source: "bound" };
   }
 
-  // Low ids are easy spoof targets without live verification.
-  if (uid < 1000) {
-    return {
-      ok: false,
-      error: "identity-unverified",
-      status: 403,
-      authorId: uid,
-    };
-  }
+  const claimed = cleanUsername(authorName);
+  const name =
+    claimed && !isPlaceholderUsername(claimed) ? claimed : `Player ${uid}`;
 
-  // Name already bound to a different id?
   const db = await getRedis();
-  const ownerRaw = await db.get(NAME_KEY(claimed));
-  const owner = parseUserId(ownerRaw);
-  if (owner !== null && owner !== uid) {
-    return {
-      ok: false,
-      error: "name-taken",
-      status: 403,
-      ownerId: owner,
-    };
+  if (!isPlaceholderUsername(name)) {
+    const ownerRaw = await db.get(NAME_KEY(name));
+    const owner = parseUserId(ownerRaw);
+    if (owner !== null && owner !== uid) {
+      // Name already owned by someone else — keep this id on Player {id}
+      const fallback = `Player ${uid}`;
+      await setBoundUsername(uid, fallback);
+      return {
+        ok: true,
+        authorId: uid,
+        authorName: fallback,
+        source: "fallback",
+      };
+    }
   }
 
-  await setBoundUsername(uid, claimed);
-  return { ok: true, authorId: uid, authorName: claimed, source: "claim" };
+  await setBoundUsername(uid, name);
+  return {
+    ok: true,
+    authorId: uid,
+    authorName: name,
+    source: isPlaceholderUsername(claimed) ? "fallback" : "claim",
+  };
 }

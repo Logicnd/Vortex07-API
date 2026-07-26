@@ -55,7 +55,11 @@
     },
     {
       "source": "/v1/forum/purge-spoof",
-      "destination": "/api/v1/forum/repair?action=purge-spoof"
+      "destination": "/api/v1/forum/repair?action=repair-names"
+    },
+    {
+      "source": "/v1/forum/repair-names",
+      "destination": "/api/v1/forum/repair?action=repair-names"
     },
     {
       "source": "/v1/forum/threads",

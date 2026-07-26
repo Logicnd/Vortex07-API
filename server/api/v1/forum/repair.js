@@ -5,8 +5,8 @@ import {
   purgeSpoofedForum,
   rebuildForumIndex,
   reseedKnownForumThreads,
+  repairAuthorNames,
 } from "../../../lib/forum.js";
-import { clearBoundUsername } from "../../../lib/identity.js";
 import { getRedis } from "../../../lib/redis.js";
 
 const CORS = {
@@ -28,9 +28,8 @@ function resolveAction(request, body) {
   const fromQuery = url.searchParams.get("action");
   if (fromQuery) return String(fromQuery).toLowerCase();
   if (body?.action) return String(body.action).toLowerCase();
-  // Path aliases: /v1/forum/diagnose|rebuild-index|reseed|repair|purge-spoof
   const m = url.pathname.match(
-    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof)\/?$/i,
+    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof|repair-names)\/?$/i,
   );
   if (m) return m[1].toLowerCase();
   return "repair";
@@ -70,8 +69,9 @@ async function repairThread1Op() {
 }
 
 /**
- * Mod-only forum maintenance hub (Hobby-safe: one serverless function).
- * Actions: repair | diagnose | rebuild-index | reseed | purge-spoof
+ * Mod-only forum maintenance hub.
+ * Actions: repair | diagnose | rebuild-index | reseed | repair-names | purge-spoof
+ * (purge-spoof is now an alias of repair-names — rewrites names, never deletes)
  */
 export async function POST(request) {
   let body = {};
@@ -101,14 +101,13 @@ export async function POST(request) {
     if (action === "reseed") {
       return json(await reseedKnownForumThreads());
     }
-    if (action === "purge-spoof" || action === "purge") {
-      // Drop poisoned low-id bindings from earlier spoof dumps before rebinding.
-      for (const uid of [1, 2]) {
-        await clearBoundUsername(uid).catch(() => {});
-      }
-      return json(await purgeSpoofedForum());
+    if (
+      action === "repair-names" ||
+      action === "purge-spoof" ||
+      action === "purge"
+    ) {
+      return json(await repairAuthorNames());
     }
-    // default: legacy thread-1 OP repair
     const result = await repairThread1Op();
     return json(result, result.status || 200);
   } catch (err) {

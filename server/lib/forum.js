@@ -8,7 +8,7 @@ import {
   resolveAuthor,
   setBoundUsername,
   getBoundUsername,
-  clearBoundUsername,
+  canonicalUsername,
 } from "./identity.js";
 
 export const FORUM_TITLE_MAX = 120;
@@ -653,15 +653,12 @@ export async function reseedKnownForumThreads() {
 }
 
 /**
- * Scan all forum posts, bind consistent high-trust names, and remove spoofs:
- * - placeholder / repeated-char names
- * - authorIds with conflicting names (keep majority non-placeholder)
- * - low-id one-shot flood posts (classic old-API spoof dump)
+ * De-spoof in place: bind one canonical name per authorId and rewrite
+ * every thread/post authorName to match. Never deletes posts.
  */
-export async function purgeSpoofedForum() {
+export async function repairAuthorNames() {
   const db = await getRedis();
   const nameCounts = new Map(); // id -> Map(nameLower -> { name, count })
-  const idPostCount = new Map();
   const threadMeta = [];
 
   for (const cat of FORUM_CATEGORIES) {
@@ -683,12 +680,11 @@ export async function purgeSpoofedForum() {
           /* skip */
         }
       }
-      threadMeta.push({ id: String(id), cat: cat.id, thread, posts });
+      threadMeta.push({ id: String(id), thread, posts });
 
       for (const post of posts) {
         const uid = parseUserId(post.authorId);
         if (uid === null) continue;
-        idPostCount.set(uid, (idPostCount.get(uid) || 0) + 1);
         const name = cleanUsername(post.authorName) || `Player ${uid}`;
         const key = name.toLowerCase();
         if (!nameCounts.has(uid)) nameCounts.set(uid, new Map());
@@ -700,112 +696,78 @@ export async function purgeSpoofedForum() {
     }
   }
 
-  // Pick canonical name per id (majority non-placeholder). Bind trusted ones.
-  // Never bind ids that had conflicting names — that re-locks spoofs in place.
   const canonical = new Map();
+  const samples = [];
+
   for (const [uid, bucket] of nameCounts.entries()) {
-    if (bucket.size !== 1) continue;
-    const only = [...bucket.values()][0];
-    if (isPlaceholderUsername(only.name)) continue;
-    // Prefer established accounts; skip low-id one-offs left after spam
-    if (uid < 1000 && only.count < 2 && !FORUM_MOD_IDS.has(uid)) continue;
-    if (uid < 1000 && FORUM_MOD_IDS.has(uid) && only.count < 2) continue;
-    canonical.set(uid, only.name);
-    await setBoundUsername(uid, only.name);
+    // Live playvortex name wins when available
+    let canon = await canonicalUsername(uid);
+    if (!canon) {
+      const ranked = [...bucket.values()].sort((a, b) => {
+        const ap = isPlaceholderUsername(a.name) ? 1 : 0;
+        const bp = isPlaceholderUsername(b.name) ? 1 : 0;
+        if (ap !== bp) return ap - bp;
+        return b.count - a.count;
+      });
+      const pick = ranked[0];
+      canon =
+        pick && !isPlaceholderUsername(pick.name)
+          ? pick.name
+          : pick?.name || `Player ${uid}`;
+    }
+    canonical.set(uid, canon);
+    await setBoundUsername(uid, canon);
+    if (samples.length < 30) {
+      samples.push({
+        authorId: uid,
+        authorName: canon,
+        variants: [...bucket.values()].map((v) => `${v.name}×${v.count}`),
+      });
+    }
   }
 
-  let removedPosts = 0;
   let rewritten = 0;
-  let removedThreads = 0;
-  const removedSample = [];
-
-  function isSpoofPost(post, threadPostCount) {
-    const uid = parseUserId(post.authorId);
-    const name = cleanUsername(post.authorName);
-    if (uid === null) return true;
-    if (isPlaceholderUsername(name)) return true;
-
-    const canon = canonical.get(uid);
-    if (canon && !namesMatch(name, canon)) return true;
-
-    const variants = nameCounts.get(uid);
-    if (variants && variants.size > 1 && !canon) {
-      // Conflicting names and no trustworthy canonical → drop all
-      return true;
-    }
-
-    // Low-id one-shot flood (old open API dump)
-    if (
-      uid < 1000 &&
-      !FORUM_MOD_IDS.has(uid) &&
-      (idPostCount.get(uid) || 0) <= 2 &&
-      threadPostCount >= 20
-    ) {
-      return true;
-    }
-
-    return false;
-  }
-
   for (const entry of threadMeta) {
     const { id, thread, posts } = entry;
-    const kept = [];
-    for (const post of posts) {
-      if (isSpoofPost(post, posts.length)) {
-        removedPosts += 1;
-        if (removedSample.length < 40) {
-          removedSample.push({
-            threadId: id,
-            postId: post.id,
-            authorId: post.authorId,
-            authorName: post.authorName,
-          });
-        }
-        continue;
-      }
-      const uid = parseUserId(post.authorId);
-      const canon = uid !== null ? canonical.get(uid) : null;
-      if (canon && !namesMatch(post.authorName, canon)) {
-        post.authorName = canon;
+    let dirtyThread = false;
+    const uidThread = parseUserId(thread.authorId);
+    if (uidThread !== null && canonical.has(uidThread)) {
+      const next = canonical.get(uidThread);
+      if (!namesMatch(thread.authorName, next)) {
+        thread.authorName = next;
+        dirtyThread = true;
         rewritten += 1;
       }
-      kept.push(post);
     }
 
-    if (kept.length === 0) {
-      const cat = normalizeCategoryId(thread.categoryId);
-      await db.del(threadKey(id));
-      await db.del(postsKey(id));
-      await db.zRem(catKey(cat), id);
-      removedThreads += 1;
-      continue;
+    for (let i = 0; i < posts.length; i += 1) {
+      const post = posts[i];
+      const uid = parseUserId(post.authorId);
+      if (uid === null || !canonical.has(uid)) continue;
+      const next = canonical.get(uid);
+      if (namesMatch(post.authorName, next)) continue;
+      post.authorName = next;
+      await db.lSet(postsKey(id), i, JSON.stringify(post));
+      rewritten += 1;
     }
 
-    // If OP was removed, promote first kept post as OP metadata
-    const op = kept[0];
-    thread.authorId = op.authorId;
-    thread.authorName = op.authorName;
-    thread.replyCount = Math.max(0, kept.length - 1);
-    thread.updatedAt =
-      kept[kept.length - 1]?.createdAt || thread.updatedAt || thread.createdAt;
-
-    await db.del(postsKey(id));
-    if (kept.length) {
-      await db.rPush(postsKey(id), ...kept.map((p) => JSON.stringify(p)));
+    if (dirtyThread) {
+      await db.set(threadKey(id), JSON.stringify(thread));
     }
-    await db.set(threadKey(id), JSON.stringify(thread));
   }
 
-  const rebuild = await rebuildForumIndex();
   return {
     ok: true,
-    removedPosts,
+    mode: "repair-names",
     rewritten,
-    removedThreads,
     boundUsers: canonical.size,
-    removedSample,
-    rebuild,
+    samples,
   };
+}
+
+/** @deprecated Use repairAuthorNames — kept as alias for old purge-spoof callers. */
+export async function purgeSpoofedForum() {
+  return repairAuthorNames();
 }
 
 
