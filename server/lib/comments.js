@@ -57,14 +57,25 @@ export async function listComments(gameId, limit = 50, offset = 0) {
   return { gameId, comments, total };
 }
 
-export async function addComment({ gameId, body, authorId, authorName }) {
+export async function addComment({
+  gameId,
+  body,
+  authorId,
+  authorName,
+  sessionCookie,
+}) {
   const db = await getRedis();
   const cleanBody = cleanText(body, COMMENT_BODY_MAX);
   if (!cleanBody) {
     return { ok: false, error: "bad-body", status: 400 };
   }
 
-  const identity = await resolveAuthor({ authorId, authorName });
+  const identity = await resolveAuthor({
+    authorId,
+    authorName,
+    sessionCookie,
+    requireSession: true,
+  });
   if (!identity.ok) return identity;
 
   const now = new Date().toISOString();

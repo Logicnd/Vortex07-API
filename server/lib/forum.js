@@ -114,7 +114,14 @@ export async function getThread(threadId) {
   return { thread, posts };
 }
 
-export async function createThread({ categoryId, title, body, authorId, authorName }) {
+export async function createThread({
+  categoryId,
+  title,
+  body,
+  authorId,
+  authorName,
+  sessionCookie,
+}) {
   const db = await getRedis();
   const cat = normalizeCategoryId(categoryId);
   const cleanTitle = cleanText(title, FORUM_TITLE_MAX);
@@ -123,7 +130,12 @@ export async function createThread({ categoryId, title, body, authorId, authorNa
     return { ok: false, error: "bad-body", status: 400 };
   }
 
-  const identity = await resolveAuthor({ authorId, authorName });
+  const identity = await resolveAuthor({
+    authorId,
+    authorName,
+    sessionCookie,
+    requireSession: true,
+  });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
   const name = identity.authorName;
@@ -229,7 +241,13 @@ export async function renameAuthor({ authorId, authorName, actorId }) {
   return { ok: true, authorId: uid, authorName: name, updated };
 }
 
-export async function replyToThread({ threadId, body, authorId, authorName }) {
+export async function replyToThread({
+  threadId,
+  body,
+  authorId,
+  authorName,
+  sessionCookie,
+}) {
   const db = await getRedis();
   const id = String(threadId || "");
   const raw = await db.get(threadKey(id));
@@ -245,7 +263,12 @@ export async function replyToThread({ threadId, body, authorId, authorName }) {
   const cleanBody = cleanText(body, FORUM_BODY_MAX);
   if (!cleanBody) return { ok: false, error: "bad-body", status: 400 };
 
-  const identity = await resolveAuthor({ authorId, authorName });
+  const identity = await resolveAuthor({
+    authorId,
+    authorName,
+    sessionCookie,
+    requireSession: true,
+  });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
   const name = identity.authorName;

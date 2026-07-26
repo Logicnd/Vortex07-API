@@ -7,6 +7,7 @@ import {
   reseedKnownForumThreads,
   repairAuthorNames,
 } from "../../../lib/forum.js";
+import { ensureKnownIdentities } from "../../../lib/identity.js";
 import { getRedis } from "../../../lib/redis.js";
 
 const CORS = {
@@ -29,7 +30,7 @@ function resolveAction(request, body) {
   if (fromQuery) return String(fromQuery).toLowerCase();
   if (body?.action) return String(body.action).toLowerCase();
   const m = url.pathname.match(
-    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof|repair-names)\/?$/i,
+    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof|repair-names|seed-identities)\/?$/i,
   );
   if (m) return m[1].toLowerCase();
   return "repair";
@@ -70,7 +71,7 @@ async function repairThread1Op() {
 
 /**
  * Mod-only forum maintenance hub.
- * Actions: repair | diagnose | rebuild-index | reseed | repair-names | purge-spoof
+ * Actions: repair | diagnose | rebuild-index | reseed | repair-names | purge-spoof | seed-identities
  * (purge-spoof is now an alias of repair-names — rewrites names, never deletes)
  */
 export async function POST(request) {
@@ -101,12 +102,18 @@ export async function POST(request) {
     if (action === "reseed") {
       return json(await reseedKnownForumThreads());
     }
+    if (action === "seed-identities") {
+      const seeded = await ensureKnownIdentities();
+      return json({ ok: true, seeded });
+    }
     if (
       action === "repair-names" ||
       action === "purge-spoof" ||
       action === "purge"
     ) {
-      return json(await repairAuthorNames());
+      const seeded = await ensureKnownIdentities();
+      const repaired = await repairAuthorNames();
+      return json({ ...repaired, seeded });
     }
     const result = await repairThread1Op();
     return json(result, result.status || 200);

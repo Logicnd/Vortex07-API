@@ -1,13 +1,32 @@
 /**
  * Server-owned author identity: authorId → canonical username.
- * Clients cannot override a bound/live name — any extension version is ignored.
+ * Writes should pass a playvortex session cookie so authorId cannot be forged.
  */
 import { getRedis } from "./redis.js";
 
 const BIND_KEY = (id) => `identity:user:${id}`;
 const NAME_KEY = (name) => `identity:name:${String(name).toLowerCase()}`;
 const PLAYVORTEX_USER = (id) => `https://playvortex.io/api/users/${id}`;
+const PLAYVORTEX_ME = "https://playvortex.io/api/users/me";
 const LOOKUP_TTL_MS = 10 * 60 * 1000;
+
+/** Seed binds for well-known accounts (used when live lookup is unavailable). */
+export const KNOWN_IDENTITIES = {
+  1: "TheHaloDeveloper",
+  15936: "Kiri",
+  18202: "Kio",
+  22795: "erik2",
+  61874: "pzz",
+  16744: "HotdogBBQ3",
+  21848: "tacohacker",
+  37719: "valley",
+  40181: "USMark",
+  24351: "DeltaX",
+  29289: "sujion",
+  34712: "endstuff",
+  4426: "LSPLASKI",
+  54234: "D4NE",
+};
 
 /** @type {Map<number, { at: number, username: string|null }>} */
 const lookupMem = new Map();
@@ -33,6 +52,7 @@ export function isPlaceholderUsername(name) {
     n === "my vortex" ||
     n === "my profile" ||
     n === "guest" ||
+    n === "not me" ||
     /^player\s+\d+$/i.test(n) ||
     /^(.)\1{7,}$/i.test(n)
   );
@@ -80,6 +100,35 @@ export async function fetchPlayvortexUsername(userId) {
   }
 }
 
+/**
+ * Verify a browser session cookie against playvortex /api/users/me.
+ * Cookie is used for this request only — never stored.
+ */
+export async function fetchPlayvortexMe(sessionCookie) {
+  const cookie = String(sessionCookie || "").trim();
+  if (!cookie) return null;
+  try {
+    const res = await fetch(PLAYVORTEX_ME, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Vortex07-API/identity",
+        Cookie: cookie,
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const id = parseUserId(data?.id ?? data?.user_id ?? data?.userId);
+    const username = cleanUsername(
+      data?.username || data?.display_name || data?.displayName || data?.name,
+    );
+    if (id === null || !username || isPlaceholderUsername(username)) return null;
+    return { id, username };
+  } catch {
+    return null;
+  }
+}
+
 export async function getBoundUsername(userId) {
   const uid = parseUserId(userId);
   if (uid === null) return null;
@@ -112,9 +161,22 @@ export async function clearBoundUsername(userId) {
   return true;
 }
 
+/** Ensure seed binds exist (does not overwrite a different live-quality bind). */
+export async function ensureKnownIdentities() {
+  let seeded = 0;
+  for (const [id, name] of Object.entries(KNOWN_IDENTITIES)) {
+    const uid = Number(id);
+    const existing = await getBoundUsername(uid);
+    if (!existing || isPlaceholderUsername(existing) || existing === "not me") {
+      await setBoundUsername(uid, name);
+      seeded += 1;
+    }
+  }
+  return seeded;
+}
+
 /**
- * Canonical username for an id (live → bound → null).
- * Used by repair jobs and writes.
+ * Canonical username for an id (live → bound → known → null).
  */
 export async function canonicalUsername(userId) {
   const uid = parseUserId(userId);
@@ -124,16 +186,59 @@ export async function canonicalUsername(userId) {
     await setBoundUsername(uid, live);
     return live;
   }
-  return getBoundUsername(uid);
+  const bound = await getBoundUsername(uid);
+  if (bound) return bound;
+  const known = KNOWN_IDENTITIES[uid];
+  if (known) {
+    await setBoundUsername(uid, known);
+    return known;
+  }
+  return null;
 }
 
 /**
  * Resolve author for writes. Server owns the display name.
- * - Live / bound name always wins (client authorName is ignored)
- * - Unbound: first valid non-placeholder claim binds; else Player {id}
- * Old extension versions cannot override a bound name.
+ *
+ * Preferred: sessionCookie → playvortex /me (authorId cannot be forged).
+ * Fallback (legacy clients): live/bound/known name only — never trust client claim.
  */
-export async function resolveAuthor({ authorId, authorName }) {
+/** Read session cookie from JSON body and/or request header (never logged). */
+export function sessionCookieFrom(request, body = {}) {
+  const fromBody = String(body?.sessionCookie || "").trim();
+  if (fromBody) return fromBody;
+  try {
+    return String(request?.headers?.get?.("x-playvortex-cookie") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export async function resolveAuthor({
+  authorId,
+  authorName,
+  sessionCookie,
+  requireSession = true,
+}) {
+  const cookie = String(sessionCookie || "").trim();
+  if (cookie) {
+    const me = await fetchPlayvortexMe(cookie);
+    if (!me) {
+      return { ok: false, error: "bad-session", status: 401 };
+    }
+    await setBoundUsername(me.id, me.username);
+    return {
+      ok: true,
+      authorId: me.id,
+      authorName: me.username,
+      source: "session",
+    };
+  }
+
+  if (requireSession) {
+    return { ok: false, error: "session-required", status: 401 };
+  }
+
+  // Legacy path — name lock only (ID may still be spoofed).
   const uid = parseUserId(authorId);
   if (uid === null) {
     return { ok: false, error: "bad-actor", status: 400 };
@@ -146,37 +251,17 @@ export async function resolveAuthor({ authorId, authorName }) {
   }
 
   const bound = await getBoundUsername(uid);
-  if (bound) {
-    // Bound name is authoritative — ignore whatever the client sent.
+  if (bound && !isPlaceholderUsername(bound)) {
     return { ok: true, authorId: uid, authorName: bound, source: "bound" };
   }
 
-  const claimed = cleanUsername(authorName);
-  const name =
-    claimed && !isPlaceholderUsername(claimed) ? claimed : `Player ${uid}`;
-
-  const db = await getRedis();
-  if (!isPlaceholderUsername(name)) {
-    const ownerRaw = await db.get(NAME_KEY(name));
-    const owner = parseUserId(ownerRaw);
-    if (owner !== null && owner !== uid) {
-      // Name already owned by someone else — keep this id on Player {id}
-      const fallback = `Player ${uid}`;
-      await setBoundUsername(uid, fallback);
-      return {
-        ok: true,
-        authorId: uid,
-        authorName: fallback,
-        source: "fallback",
-      };
-    }
+  const known = KNOWN_IDENTITIES[uid];
+  if (known) {
+    await setBoundUsername(uid, known);
+    return { ok: true, authorId: uid, authorName: known, source: "known" };
   }
 
-  await setBoundUsername(uid, name);
-  return {
-    ok: true,
-    authorId: uid,
-    authorName: name,
-    source: isPlaceholderUsername(claimed) ? "fallback" : "claim",
-  };
+  // Never first-claim a client-supplied name.
+  void authorName;
+  return { ok: false, error: "identity-unverified", status: 403 };
 }

@@ -13,7 +13,7 @@ import { guardRead } from "../../../lib/read-guard.js";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, X-Playvortex-Cookie",
 };
 
 function json(data, status = 200) {
@@ -126,6 +126,10 @@ export async function POST(request, context) {
         authorName: body?.authorName,
         peerName: body?.peerName,
         body: body?.body,
+        sessionCookie:
+          body?.sessionCookie ||
+          request.headers.get("x-playvortex-cookie") ||
+          "",
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result, 201);

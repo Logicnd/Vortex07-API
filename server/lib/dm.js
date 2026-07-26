@@ -206,16 +206,28 @@ export async function sendMessage({
   authorName,
   peerName,
   body,
+  sessionCookie,
 }) {
-  const uid = parseUserId(actorId);
   const peer = parseUserId(peerId);
-  if (uid === null) return { ok: false, error: "bad-actor", status: 400 };
-  if (peer === null || peer === uid) {
+  if (peer === null) {
     return { ok: false, error: "bad-peer", status: 400 };
   }
 
   const cleanBody = cleanText(body, DM_BODY_MAX);
   if (!cleanBody) return { ok: false, error: "bad-body", status: 400 };
+
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    authorName,
+    sessionCookie,
+    requireSession: true,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+  const name = identity.authorName;
+  if (peer === uid) {
+    return { ok: false, error: "bad-peer", status: 400 };
+  }
 
   if (await isMuted(uid)) {
     return { ok: false, error: "muted", status: 403 };
@@ -223,10 +235,6 @@ export async function sendMessage({
   if (await isMuted(peer)) {
     return { ok: false, error: "peer-muted", status: 403 };
   }
-
-  const identity = await resolveAuthor({ authorId: uid, authorName });
-  if (!identity.ok) return identity;
-  const name = identity.authorName;
   const peerLabelRaw = cleanUsername(peerName);
   const peerLabel =
     peerLabelRaw && !isPlaceholderUsername(peerLabelRaw) ? peerLabelRaw : "";
