@@ -138,6 +138,10 @@
       "destination": "/api/v1/dm/mod-logs"
     },
     {
+      "source": "/v1/dm/mod/thread",
+      "destination": "/api/v1/dm/mod-thread"
+    },
+    {
       "source": "/v1/dm/mod/muted",
       "destination": "/api/v1/dm/mod-muted"
     },

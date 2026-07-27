@@ -387,6 +387,7 @@ export async function sendMessage({
     from: uid,
     fromName: name,
     to: peer,
+    toName: peerLabel,
     body: cleanBody.slice(0, 200),
     createdAt: now,
   };
@@ -872,7 +873,71 @@ export async function listModLogs(actorId, limit = 50) {
       /* skip */
     }
   }
-  return { ok: true, logs };
+  const enriched = [];
+  for (const log of logs) {
+    const from = parseUserId(log.from);
+    const to = parseUserId(log.to);
+    const fromName =
+      from !== null
+        ? await displayNameFor(from, log.fromName || `Player ${from}`)
+        : log.fromName || String(log.from || "");
+    const toName =
+      to !== null
+        ? await displayNameFor(to, log.toName || `Player ${to}`)
+        : log.groupId
+          ? log.groupName || "Group chat"
+          : "";
+    enriched.push({
+      ...log,
+      from: from ?? log.from,
+      to: to ?? log.to,
+      fromName,
+      toName,
+    });
+  }
+  return { ok: true, logs: enriched };
+}
+
+/** Mod-only: read any 1:1 DM thread between two users (does not mark read). */
+export async function getModThread(actorId, userA, userB) {
+  if (!canModerateForum(actorId)) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+  const a = parseUserId(userA);
+  const b = parseUserId(userB);
+  if (a === null || b === null || a === b) {
+    return { ok: false, error: "bad-users", status: 400 };
+  }
+
+  const db = await getRedis();
+  const tid = threadIdFor(a, b);
+  const rows = await db.lRange(msgsKey(tid), 0, -1);
+  const messages = [];
+  for (const row of rows) {
+    try {
+      const msg = JSON.parse(row);
+      const from = parseUserId(msg.from);
+      if (from !== null) {
+        msg.authorName = await displayNameFor(from, msg.authorName);
+      }
+      messages.push(msg);
+    } catch {
+      /* skip */
+    }
+  }
+
+  const aName = await displayNameFor(a, `Player ${a}`);
+  const bName = await displayNameFor(b, `Player ${b}`);
+
+  return {
+    ok: true,
+    threadId: tid,
+    a,
+    b,
+    aName,
+    bName,
+    messages,
+  };
 }
 
 export async function listMuted(actorId) {
@@ -889,8 +954,10 @@ export async function listMuted(actorId) {
     } catch {
       info = {};
     }
+    const userId = Number(uid);
     muted.push({
-      userId: Number(uid),
+      userId,
+      userName: await displayNameFor(userId, `Player ${userId}`),
       reason: info.reason || "",
       by: info.by ?? null,
       at: info.at || null,

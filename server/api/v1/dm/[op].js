@@ -3,6 +3,7 @@ import {
   createGroupChat,
   deleteGroupChat,
   getGroupThread,
+  getModThread,
   getThread,
   getUnreadCount,
   kickGroupMember,
@@ -124,6 +125,22 @@ export async function GET(request, context) {
 
     if (op === "mod-logs") {
       const result = await listModLogs(actorId, limit);
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
+    }
+
+    if (op === "mod-thread") {
+      const limited = await guardRead(request, "dm-mod-thread", {
+        actorId,
+        max: 40,
+      });
+      if (limited) return limited;
+      const url = new URL(request.url);
+      const result = await getModThread(
+        actorId,
+        url.searchParams.get("a") ?? url.searchParams.get("userA"),
+        url.searchParams.get("b") ?? url.searchParams.get("userB"),
+      );
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
     }
