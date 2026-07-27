@@ -51,8 +51,10 @@ export async function GET(request, context) {
   const targetId = await resolveTargetId(request, context);
   if (targetId === null) return json({ ok: false, error: "bad-target" }, 400);
 
-  const url = new URL(request.url);
-  const actorId = parseActorId(url.searchParams.get("actorId"));
+  // Public counts; myVote only for a verified caller.
+  let actorId = null;
+  const identity = await resolveWriteIdentity(request, {});
+  if (identity.ok) actorId = identity.authorId;
 
   try {
     const status = await getRatingStatus(targetId, actorId);

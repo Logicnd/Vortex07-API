@@ -16,6 +16,7 @@ import {
   sendMessage,
   unmuteUser,
 } from "../../../lib/dm.js";
+import { resolveWriteIdentity } from "../../../lib/identity.js";
 import { guardRead } from "../../../lib/read-guard.js";
 
 const CORS = {
@@ -72,9 +73,13 @@ async function resolveOp(request, context) {
     op: op || null,
     peerId: url.searchParams.get("peerId"),
     groupId: url.searchParams.get("groupId"),
-    actorId: url.searchParams.get("actorId"),
     limit: url.searchParams.get("limit"),
   };
+}
+
+/** Private DM/mod reads: identity from cookie/proof only (never query actorId). */
+async function requireActor(request) {
+  return resolveWriteIdentity(request, {});
 }
 
 export function OPTIONS() {
@@ -82,12 +87,13 @@ export function OPTIONS() {
 }
 
 export async function GET(request, context) {
-  const { op, peerId, groupId, actorId, limit } = await resolveOp(
-    request,
-    context,
-  );
+  const { op, peerId, groupId, limit } = await resolveOp(request, context);
 
   try {
+    const identity = await requireActor(request);
+    if (!identity.ok) return json(identity, identity.status || 401);
+    const actorId = identity.authorId;
+
     if (op === "inbox") {
       const limited = await guardRead(request, "dm-inbox", {
         actorId,

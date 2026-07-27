@@ -4,6 +4,7 @@ import {
   resolveLikeActor,
   toggleLike,
 } from "../../../lib/likes.js";
+import { resolveWriteIdentity } from "../../../lib/identity.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -49,8 +50,10 @@ export async function GET(request, context) {
   const targetId = await resolveTargetId(request, context);
   if (targetId === null) return json({ ok: false, error: "bad-target" }, 400);
 
-  const url = new URL(request.url);
-  const actorId = parseUserId(url.searchParams.get("actorId"));
+  // Public count is fine; myVote only when the request is authenticated.
+  let actorId = null;
+  const identity = await resolveWriteIdentity(request, {});
+  if (identity.ok) actorId = identity.authorId;
 
   try {
     const status = await getLikeStatus(targetId, actorId);
