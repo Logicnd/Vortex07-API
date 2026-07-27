@@ -11,15 +11,6 @@ import {
   sendMessage,
   unmuteUser,
 } from "../../../lib/dm.js";
-import {
-  canControlFollowCycle,
-  cookieFromFollowRequest,
-  getFollowCycleState,
-  publicFollowState,
-  resetFollowCycle,
-  startFollowCycle,
-  stopFollowCycle,
-} from "../../../lib/follow-cycle.js";
 import { guardRead } from "../../../lib/read-guard.js";
 
 const CORS = {
@@ -64,14 +55,6 @@ async function resolveOp(request, context) {
   };
 }
 
-/** Folded here to stay under Hobby's 12 serverless function limit. */
-function followOpFrom(op) {
-  if (!op) return null;
-  if (op === "follow" || op === "follow-status") return "status";
-  if (op.startsWith("follow-")) return op.slice("follow-".length);
-  return null;
-}
-
 export function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS });
 }
@@ -81,20 +64,8 @@ export async function GET(request, context) {
     request,
     context,
   );
-  const followOp = followOpFrom(op);
 
   try {
-    if (followOp === "status") {
-      const state = publicFollowState(await getFollowCycleState());
-      return json({ ok: true, state });
-    }
-    if (followOp === "can-control") {
-      return json({
-        ok: true,
-        allowed: canControlFollowCycle(actorId),
-      });
-    }
-
     if (op === "inbox") {
       const limited = await guardRead(request, "dm-inbox", {
         actorId,
@@ -164,33 +135,8 @@ export async function GET(request, context) {
 export async function POST(request, context) {
   const { op, peerId, groupId } = await resolveOp(request, context);
   const body = await readBody(request);
-  const followOp = followOpFrom(op);
 
   try {
-    if (followOp === "start") {
-      const result = await startFollowCycle({
-        actorId: body?.actorId,
-        sessionCookie: cookieFromFollowRequest(request, body),
-        reset: Boolean(body?.reset),
-        nextId: body?.nextId,
-      });
-      if (!result.ok) return json(result, result.status || 400);
-      return json(result);
-    }
-    if (followOp === "stop") {
-      const result = await stopFollowCycle({
-        actorId: body?.actorId,
-        clearCookie: body?.clearCookie !== false,
-      });
-      if (!result.ok) return json(result, result.status || 400);
-      return json(result);
-    }
-    if (followOp === "reset") {
-      const result = await resetFollowCycle({ actorId: body?.actorId });
-      if (!result.ok) return json(result, result.status || 400);
-      return json(result);
-    }
-
     if (op === "send") {
       const result = await sendMessage({
         actorId: body?.actorId,
