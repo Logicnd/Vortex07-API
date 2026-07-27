@@ -511,12 +511,15 @@ export async function getGroupThread(actorId, groupId) {
 
   await db.hDel(unreadKey(uid), gcInboxValue(gid));
 
+  const createdBy = parseUserId(meta.createdBy) ?? members[0] ?? null;
+
   return {
     ok: true,
     kind: "gc",
     groupId: gid,
     name: cleanText(meta.name, GC_NAME_MAX) || `Group ${gid}`,
     members,
+    createdBy,
     memberCount: members.length,
     messages,
     muted: await isMuted(uid),
@@ -546,7 +549,6 @@ export async function sendGroupMessage({
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
-  // Prefer live display name for this UID (ignore stale/wrong binds when possible).
   const name = await displayNameFor(uid, identity.authorName);
 
   if (await isMuted(uid)) {
@@ -554,18 +556,10 @@ export async function sendGroupMessage({
   }
 
   const db = await getRedis();
-  const raw = await db.get(gcKey(gid));
-  if (!raw) return { ok: false, error: "not-found", status: 404 };
-  let meta;
-  try {
-    meta = JSON.parse(raw);
-  } catch {
-    return { ok: false, error: "not-found", status: 404 };
-  }
+  const meta = await loadGroupMeta(db, gid);
+  if (!meta) return { ok: false, error: "not-found", status: 404 };
 
-  const members = Array.isArray(meta.members)
-    ? meta.members.map(Number).filter((n) => Number.isInteger(n) && n > 0)
-    : [];
+  const members = normalizeMembers(meta);
   if (!members.includes(uid)) {
     return { ok: false, error: "forbidden", status: 403 };
   }
@@ -629,6 +623,238 @@ export async function sendGroupMessage({
       lastPreview: meta.lastPreview,
     },
   };
+}
+
+async function loadGroupMeta(db, gid) {
+  const raw = await db.get(gcKey(gid));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeMembers(meta) {
+  return Array.isArray(meta?.members)
+    ? meta.members.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+    : [];
+}
+
+async function stripMemberInbox(db, uid, gid) {
+  const inboxVal = gcInboxValue(gid);
+  await db.zRem(userThreadsKey(uid), inboxVal);
+  await db.hDel(unreadKey(uid), inboxVal);
+}
+
+async function destroyGroup(db, gid, members) {
+  const inboxVal = gcInboxValue(gid);
+  for (const mid of members) {
+    await stripMemberInbox(db, mid, gid);
+  }
+  await db.del(gcKey(gid));
+  await db.del(gcMsgsKey(gid));
+  return { ok: true, deleted: true, groupId: gid };
+}
+
+export async function kickGroupMember({
+  actorId,
+  groupId,
+  targetId,
+  authorName,
+  sessionCookie,
+}) {
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    authorName,
+    sessionCookie,
+    requireSession: false,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+  const gid = parseGroupId(groupId);
+  const target = parseUserId(targetId);
+  if (!gid) return { ok: false, error: "bad-group", status: 400 };
+  if (target === null) return { ok: false, error: "bad-target", status: 400 };
+  if (target === uid) {
+    return { ok: false, error: "cannot-kick-self", status: 400 };
+  }
+
+  const db = await getRedis();
+  const meta = await loadGroupMeta(db, gid);
+  if (!meta) return { ok: false, error: "not-found", status: 404 };
+  const members = normalizeMembers(meta);
+  const owner = parseUserId(meta.createdBy);
+  if (owner !== uid) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+  if (!members.includes(uid)) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+  if (!members.includes(target)) {
+    return { ok: false, error: "not-member", status: 400 };
+  }
+
+  const next = members.filter((id) => id !== target);
+  meta.members = next;
+  meta.updatedAt = new Date().toISOString();
+  await db.set(gcKey(gid), JSON.stringify(meta));
+  await stripMemberInbox(db, target, gid);
+
+  return {
+    ok: true,
+    groupId: gid,
+    kicked: target,
+    members: next,
+    createdBy: owner,
+    memberCount: next.length,
+  };
+}
+
+export async function addGroupMembers({
+  actorId,
+  groupId,
+  memberIds,
+  authorName,
+  sessionCookie,
+}) {
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    authorName,
+    sessionCookie,
+    requireSession: false,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+  const gid = parseGroupId(groupId);
+  if (!gid) return { ok: false, error: "bad-group", status: 400 };
+
+  const db = await getRedis();
+  const meta = await loadGroupMeta(db, gid);
+  if (!meta) return { ok: false, error: "not-found", status: 404 };
+  const members = normalizeMembers(meta);
+  const owner = parseUserId(meta.createdBy);
+  if (owner !== uid || !members.includes(uid)) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+
+  const memberSet = new Set(members);
+  const added = [];
+  const raw = Array.isArray(memberIds) ? memberIds : [];
+  for (const item of raw) {
+    const id = parseUserId(item);
+    if (id === null || memberSet.has(id)) continue;
+    memberSet.add(id);
+    added.push(id);
+  }
+  if (!added.length) {
+    return { ok: false, error: "no-new-members", status: 400 };
+  }
+  if (memberSet.size > GC_MEMBERS_MAX) {
+    return { ok: false, error: "too-many-members", status: 400 };
+  }
+
+  const next = [...memberSet].sort((a, b) => a - b);
+  meta.members = next;
+  meta.updatedAt = new Date().toISOString();
+  await db.set(gcKey(gid), JSON.stringify(meta));
+
+  const score = Date.now();
+  const inboxVal = gcInboxValue(gid);
+  for (const mid of added) {
+    await db.zAdd(userThreadsKey(mid), { score, value: inboxVal });
+  }
+
+  return {
+    ok: true,
+    groupId: gid,
+    added,
+    members: next,
+    createdBy: owner,
+    memberCount: next.length,
+  };
+}
+
+export async function leaveGroupChat({
+  actorId,
+  groupId,
+  authorName,
+  sessionCookie,
+}) {
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    authorName,
+    sessionCookie,
+    requireSession: false,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+  const gid = parseGroupId(groupId);
+  if (!gid) return { ok: false, error: "bad-group", status: 400 };
+
+  const db = await getRedis();
+  const meta = await loadGroupMeta(db, gid);
+  if (!meta) return { ok: false, error: "not-found", status: 404 };
+  const members = normalizeMembers(meta);
+  if (!members.includes(uid)) {
+    return { ok: false, error: "not-member", status: 400 };
+  }
+
+  const next = members.filter((id) => id !== uid);
+  if (!next.length) {
+    await destroyGroup(db, gid, members);
+    return { ok: true, left: uid, deleted: true, groupId: gid };
+  }
+
+  let owner = parseUserId(meta.createdBy);
+  if (owner === uid) {
+    // Promote lowest remaining id (stable "oldest" stand-in).
+    owner = Math.min(...next);
+    meta.createdBy = owner;
+  }
+  meta.members = next;
+  meta.updatedAt = new Date().toISOString();
+  await db.set(gcKey(gid), JSON.stringify(meta));
+  await stripMemberInbox(db, uid, gid);
+
+  return {
+    ok: true,
+    left: uid,
+    deleted: false,
+    groupId: gid,
+    members: next,
+    createdBy: owner,
+    memberCount: next.length,
+  };
+}
+
+export async function deleteGroupChat({
+  actorId,
+  groupId,
+  authorName,
+  sessionCookie,
+}) {
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    authorName,
+    sessionCookie,
+    requireSession: false,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+  const gid = parseGroupId(groupId);
+  if (!gid) return { ok: false, error: "bad-group", status: 400 };
+
+  const db = await getRedis();
+  const meta = await loadGroupMeta(db, gid);
+  if (!meta) return { ok: false, error: "not-found", status: 404 };
+  const members = normalizeMembers(meta);
+  const owner = parseUserId(meta.createdBy);
+  if (owner !== uid || !members.includes(uid)) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+
+  return destroyGroup(db, gid, members);
 }
 
 export async function listModLogs(actorId, limit = 50) {

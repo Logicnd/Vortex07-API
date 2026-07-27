@@ -114,6 +114,22 @@
       "destination": "/api/v1/dm/gc-send?groupId=:groupId"
     },
     {
+      "source": "/v1/dm/gc/:groupId/kick",
+      "destination": "/api/v1/dm/gc-kick?groupId=:groupId"
+    },
+    {
+      "source": "/v1/dm/gc/:groupId/add",
+      "destination": "/api/v1/dm/gc-add?groupId=:groupId"
+    },
+    {
+      "source": "/v1/dm/gc/:groupId/leave",
+      "destination": "/api/v1/dm/gc-leave?groupId=:groupId"
+    },
+    {
+      "source": "/v1/dm/gc/:groupId/delete",
+      "destination": "/api/v1/dm/gc-delete?groupId=:groupId"
+    },
+    {
       "source": "/v1/dm/gc/:groupId",
       "destination": "/api/v1/dm/gc-thread?groupId=:groupId"
     },

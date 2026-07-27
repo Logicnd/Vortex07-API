@@ -1,8 +1,12 @@
 import {
+  addGroupMembers,
   createGroupChat,
+  deleteGroupChat,
   getGroupThread,
   getThread,
   getUnreadCount,
+  kickGroupMember,
+  leaveGroupChat,
   listInbox,
   listModLogs,
   listMuted,
@@ -29,6 +33,14 @@ async function readBody(request) {
   } catch {
     return {};
   }
+}
+
+function sessionCookieFrom(request, body) {
+  return (
+    body?.sessionCookie ||
+    request.headers.get("x-playvortex-cookie") ||
+    ""
+  );
 }
 
 async function resolveOp(request, context) {
@@ -135,6 +147,7 @@ export async function GET(request, context) {
 export async function POST(request, context) {
   const { op, peerId, groupId } = await resolveOp(request, context);
   const body = await readBody(request);
+  const sessionCookie = sessionCookieFrom(request, body);
 
   try {
     if (op === "send") {
@@ -144,10 +157,7 @@ export async function POST(request, context) {
         authorName: body?.authorName,
         peerName: body?.peerName,
         body: body?.body,
-        sessionCookie:
-          body?.sessionCookie ||
-          request.headers.get("x-playvortex-cookie") ||
-          "",
+        sessionCookie,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result, 201);
@@ -159,10 +169,7 @@ export async function POST(request, context) {
         name: body?.name,
         memberIds: body?.memberIds,
         authorName: body?.authorName,
-        sessionCookie:
-          body?.sessionCookie ||
-          request.headers.get("x-playvortex-cookie") ||
-          "",
+        sessionCookie,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result, 201);
@@ -174,13 +181,56 @@ export async function POST(request, context) {
         groupId: groupId ?? body?.groupId,
         authorName: body?.authorName,
         body: body?.body,
-        sessionCookie:
-          body?.sessionCookie ||
-          request.headers.get("x-playvortex-cookie") ||
-          "",
+        sessionCookie,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result, 201);
+    }
+
+    if (op === "gc-kick") {
+      const result = await kickGroupMember({
+        actorId: body?.actorId,
+        groupId: groupId ?? body?.groupId,
+        targetId: body?.targetId,
+        authorName: body?.authorName,
+        sessionCookie,
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
+    }
+
+    if (op === "gc-add") {
+      const result = await addGroupMembers({
+        actorId: body?.actorId,
+        groupId: groupId ?? body?.groupId,
+        memberIds: body?.memberIds,
+        authorName: body?.authorName,
+        sessionCookie,
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
+    }
+
+    if (op === "gc-leave") {
+      const result = await leaveGroupChat({
+        actorId: body?.actorId,
+        groupId: groupId ?? body?.groupId,
+        authorName: body?.authorName,
+        sessionCookie,
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
+    }
+
+    if (op === "gc-delete") {
+      const result = await deleteGroupChat({
+        actorId: body?.actorId,
+        groupId: groupId ?? body?.groupId,
+        authorName: body?.authorName,
+        sessionCookie,
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
     }
 
     if (op === "mod-mute") {
