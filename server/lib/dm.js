@@ -10,6 +10,9 @@ import {
 export const DM_BODY_MAX = 1000;
 export const DM_MODLOG_MAX = 200;
 export const DM_RATE_MS = 1000;
+export const GC_NAME_MAX = 60;
+export const GC_MEMBERS_MIN = 3;
+export const GC_MEMBERS_MAX = 20;
 
 export { FORUM_MOD_IDS, canModerateForum };
 
@@ -60,8 +63,33 @@ function rateKey(uid) {
   return `dm:rate:${uid}`;
 }
 
+function gcKey(gid) {
+  return `dm:gc:${gid}`;
+}
+
+function gcMsgsKey(gid) {
+  return `dm:gc:${gid}:msgs`;
+}
+
+function gcInboxValue(gid) {
+  return `gc:${gid}`;
+}
+
+function parseGroupId(value) {
+  const raw = String(value ?? "").trim();
+  const id = raw.startsWith("gc:") ? raw.slice(3) : raw;
+  if (!/^\d+$/.test(id)) return null;
+  const n = Number(id);
+  if (!Number.isInteger(n) || n < 1) return null;
+  return String(n);
+}
+
 async function nextMsgId(db) {
   return Number(await db.incr("dm:meta:next:msg"));
+}
+
+async function nextGroupId(db) {
+  return String(await db.incr("dm:meta:next:gc"));
 }
 
 /** Server-owned display name for a user id (never trust client peerName). */
@@ -124,6 +152,37 @@ export async function listInbox(actorId) {
   const conversations = [];
 
   for (const tid of ids) {
+    if (String(tid).startsWith("gc:")) {
+      const gid = parseGroupId(tid);
+      if (!gid) continue;
+      const raw = await db.get(gcKey(gid));
+      if (!raw) continue;
+      let meta;
+      try {
+        meta = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      const members = Array.isArray(meta.members)
+        ? meta.members.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+        : [];
+      if (!members.includes(uid)) continue;
+      const title = cleanText(meta.name, GC_NAME_MAX) || `Group ${gid}`;
+      conversations.push({
+        kind: "gc",
+        threadId: gcInboxValue(gid),
+        groupId: gid,
+        title,
+        peerId: null,
+        peerName: title,
+        memberCount: members.length,
+        lastPreview: meta.lastPreview || "",
+        updatedAt: meta.updatedAt || null,
+        unread: Math.max(0, Number(unreadMap[gcInboxValue(gid)]) || 0),
+      });
+      continue;
+    }
+
     const raw = await db.get(threadKey(tid));
     if (!raw) continue;
     let meta;
@@ -139,9 +198,11 @@ export async function listInbox(actorId) {
         : meta.aName || `Player ${peerId}`;
     const peerName = await displayNameFor(peerId, storedPeerName);
     conversations.push({
+      kind: "dm",
       threadId: tid,
       peerId,
       peerName,
+      title: peerName,
       lastPreview: meta.lastPreview || "",
       updatedAt: meta.updatedAt || null,
       unread: Math.max(0, Number(unreadMap[tid]) || 0),
@@ -318,6 +379,231 @@ export async function sendMessage({
   await db.lTrim(modlogKey(), 0, DM_MODLOG_MAX - 1);
 
   return { ok: true, threadId: tid, message: msg, meta };
+}
+
+export async function createGroupChat({
+  actorId,
+  name,
+  memberIds,
+  authorName,
+  sessionCookie,
+}) {
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    authorName,
+    sessionCookie,
+    requireSession: false,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+
+  if (await isMuted(uid)) {
+    return { ok: false, error: "muted", status: 403 };
+  }
+
+  const groupName = cleanText(name, GC_NAME_MAX);
+  if (!groupName) return { ok: false, error: "bad-name", status: 400 };
+
+  const rawMembers = Array.isArray(memberIds) ? memberIds : [];
+  const memberSet = new Set();
+  memberSet.add(uid);
+  for (const raw of rawMembers) {
+    const id = parseUserId(raw);
+    if (id !== null) memberSet.add(id);
+  }
+  const members = [...memberSet].sort((a, b) => a - b);
+  if (members.length < GC_MEMBERS_MIN) {
+    return { ok: false, error: "too-few-members", status: 400 };
+  }
+  if (members.length > GC_MEMBERS_MAX) {
+    return { ok: false, error: "too-many-members", status: 400 };
+  }
+
+  const db = await getRedis();
+  const gid = await nextGroupId(db);
+  const now = new Date().toISOString();
+  const meta = {
+    id: gid,
+    name: groupName,
+    members,
+    createdBy: uid,
+    updatedAt: now,
+    lastPreview: "",
+  };
+
+  await db.set(gcKey(gid), JSON.stringify(meta));
+  const score = Date.now();
+  const inboxVal = gcInboxValue(gid);
+  for (const mid of members) {
+    await db.zAdd(userThreadsKey(mid), { score, value: inboxVal });
+  }
+
+  return {
+    ok: true,
+    group: {
+      kind: "gc",
+      groupId: gid,
+      name: groupName,
+      members,
+      createdBy: uid,
+      updatedAt: now,
+      lastPreview: "",
+      memberCount: members.length,
+    },
+  };
+}
+
+export async function getGroupThread(actorId, groupId) {
+  const uid = parseUserId(actorId);
+  const gid = parseGroupId(groupId);
+  if (uid === null) return { ok: false, error: "bad-actor", status: 400 };
+  if (!gid) return { ok: false, error: "bad-group", status: 400 };
+
+  const db = await getRedis();
+  const raw = await db.get(gcKey(gid));
+  if (!raw) return { ok: false, error: "not-found", status: 404 };
+  let meta;
+  try {
+    meta = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "not-found", status: 404 };
+  }
+
+  const members = Array.isArray(meta.members)
+    ? meta.members.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+    : [];
+  if (!members.includes(uid)) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+
+  const rows = await db.lRange(gcMsgsKey(gid), 0, -1);
+  const messages = [];
+  for (const row of rows) {
+    try {
+      messages.push(JSON.parse(row));
+    } catch {
+      /* skip */
+    }
+  }
+
+  await db.hDel(unreadKey(uid), gcInboxValue(gid));
+
+  return {
+    ok: true,
+    kind: "gc",
+    groupId: gid,
+    name: cleanText(meta.name, GC_NAME_MAX) || `Group ${gid}`,
+    members,
+    memberCount: members.length,
+    messages,
+    muted: await isMuted(uid),
+    updatedAt: meta.updatedAt || null,
+    lastPreview: meta.lastPreview || "",
+  };
+}
+
+export async function sendGroupMessage({
+  actorId,
+  groupId,
+  authorName,
+  body,
+  sessionCookie,
+}) {
+  const gid = parseGroupId(groupId);
+  if (!gid) return { ok: false, error: "bad-group", status: 400 };
+
+  const cleanBody = cleanText(body, DM_BODY_MAX);
+  if (!cleanBody) return { ok: false, error: "bad-body", status: 400 };
+
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    authorName,
+    sessionCookie,
+    requireSession: false,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+  const name = identity.authorName;
+
+  if (await isMuted(uid)) {
+    return { ok: false, error: "muted", status: 403 };
+  }
+
+  const db = await getRedis();
+  const raw = await db.get(gcKey(gid));
+  if (!raw) return { ok: false, error: "not-found", status: 404 };
+  let meta;
+  try {
+    meta = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "not-found", status: 404 };
+  }
+
+  const members = Array.isArray(meta.members)
+    ? meta.members.map(Number).filter((n) => Number.isInteger(n) && n > 0)
+    : [];
+  if (!members.includes(uid)) {
+    return { ok: false, error: "forbidden", status: 403 };
+  }
+
+  const last = await db.get(rateKey(uid));
+  if (last) {
+    const elapsed = Date.now() - Number(last);
+    if (elapsed >= 0 && elapsed < DM_RATE_MS) {
+      return { ok: false, error: "rate-limited", status: 429 };
+    }
+  }
+
+  const now = new Date().toISOString();
+  const msg = {
+    id: String(await nextMsgId(db)),
+    from: uid,
+    authorName: name,
+    body: cleanBody,
+    createdAt: now,
+  };
+
+  meta.updatedAt = now;
+  meta.lastPreview = `${name}: ${cleanBody}`.slice(0, 120);
+  meta.members = members;
+
+  const score = Date.now();
+  const inboxVal = gcInboxValue(gid);
+  await db.rPush(gcMsgsKey(gid), JSON.stringify(msg));
+  await db.set(gcKey(gid), JSON.stringify(meta));
+  for (const mid of members) {
+    await db.zAdd(userThreadsKey(mid), { score, value: inboxVal });
+    if (mid !== uid) {
+      await db.hIncrBy(unreadKey(mid), inboxVal, 1);
+    }
+  }
+  await db.set(rateKey(uid), String(score), { PX: DM_RATE_MS });
+
+  const logEntry = {
+    id: msg.id,
+    threadId: inboxVal,
+    groupId: gid,
+    from: uid,
+    fromName: name,
+    to: null,
+    body: cleanBody.slice(0, 200),
+    createdAt: now,
+  };
+  await db.lPush(modlogKey(), JSON.stringify(logEntry));
+  await db.lTrim(modlogKey(), 0, DM_MODLOG_MAX - 1);
+
+  return {
+    ok: true,
+    groupId: gid,
+    message: msg,
+    meta: {
+      id: gid,
+      name: meta.name,
+      members,
+      updatedAt: now,
+      lastPreview: meta.lastPreview,
+    },
+  };
 }
 
 export async function listModLogs(actorId, limit = 50) {

@@ -1,13 +1,25 @@
 import {
+  createGroupChat,
+  getGroupThread,
   getThread,
   getUnreadCount,
   listInbox,
   listModLogs,
   listMuted,
   muteUser,
+  sendGroupMessage,
   sendMessage,
   unmuteUser,
 } from "../../../lib/dm.js";
+import {
+  canControlFollowCycle,
+  cookieFromFollowRequest,
+  getFollowCycleState,
+  publicFollowState,
+  resetFollowCycle,
+  startFollowCycle,
+  stopFollowCycle,
+} from "../../../lib/follow-cycle.js";
 import { guardRead } from "../../../lib/read-guard.js";
 
 const CORS = {
@@ -46,9 +58,18 @@ async function resolveOp(request, context) {
   return {
     op: op || null,
     peerId: url.searchParams.get("peerId"),
+    groupId: url.searchParams.get("groupId"),
     actorId: url.searchParams.get("actorId"),
     limit: url.searchParams.get("limit"),
   };
+}
+
+/** Folded here to stay under Hobby's 12 serverless function limit. */
+function followOpFrom(op) {
+  if (!op) return null;
+  if (op === "follow" || op === "follow-status") return "status";
+  if (op.startsWith("follow-")) return op.slice("follow-".length);
+  return null;
 }
 
 export function OPTIONS() {
@@ -56,9 +77,24 @@ export function OPTIONS() {
 }
 
 export async function GET(request, context) {
-  const { op, peerId, actorId, limit } = await resolveOp(request, context);
+  const { op, peerId, groupId, actorId, limit } = await resolveOp(
+    request,
+    context,
+  );
+  const followOp = followOpFrom(op);
 
   try {
+    if (followOp === "status") {
+      const state = publicFollowState(await getFollowCycleState());
+      return json({ ok: true, state });
+    }
+    if (followOp === "can-control") {
+      return json({
+        ok: true,
+        allowed: canControlFollowCycle(actorId),
+      });
+    }
+
     if (op === "inbox") {
       const limited = await guardRead(request, "dm-inbox", {
         actorId,
@@ -92,6 +128,17 @@ export async function GET(request, context) {
       return json(result);
     }
 
+    if (op === "gc-thread") {
+      const limited = await guardRead(request, "dm-gc-thread", {
+        actorId,
+        max: 40,
+      });
+      if (limited) return limited;
+      const result = await getGroupThread(actorId, groupId);
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
+    }
+
     if (op === "mod-logs") {
       const result = await listModLogs(actorId, limit);
       if (!result.ok) return json(result, result.status || 400);
@@ -115,16 +162,71 @@ export async function GET(request, context) {
 }
 
 export async function POST(request, context) {
-  const { op, peerId } = await resolveOp(request, context);
+  const { op, peerId, groupId } = await resolveOp(request, context);
   const body = await readBody(request);
+  const followOp = followOpFrom(op);
 
   try {
+    if (followOp === "start") {
+      const result = await startFollowCycle({
+        actorId: body?.actorId,
+        sessionCookie: cookieFromFollowRequest(request, body),
+        reset: Boolean(body?.reset),
+        nextId: body?.nextId,
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
+    }
+    if (followOp === "stop") {
+      const result = await stopFollowCycle({
+        actorId: body?.actorId,
+        clearCookie: body?.clearCookie !== false,
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
+    }
+    if (followOp === "reset") {
+      const result = await resetFollowCycle({ actorId: body?.actorId });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result);
+    }
+
     if (op === "send") {
       const result = await sendMessage({
         actorId: body?.actorId,
         peerId: peerId ?? body?.peerId,
         authorName: body?.authorName,
         peerName: body?.peerName,
+        body: body?.body,
+        sessionCookie:
+          body?.sessionCookie ||
+          request.headers.get("x-playvortex-cookie") ||
+          "",
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result, 201);
+    }
+
+    if (op === "gc-create") {
+      const result = await createGroupChat({
+        actorId: body?.actorId,
+        name: body?.name,
+        memberIds: body?.memberIds,
+        authorName: body?.authorName,
+        sessionCookie:
+          body?.sessionCookie ||
+          request.headers.get("x-playvortex-cookie") ||
+          "",
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result, 201);
+    }
+
+    if (op === "gc-send") {
+      const result = await sendGroupMessage({
+        actorId: body?.actorId,
+        groupId: groupId ?? body?.groupId,
+        authorName: body?.authorName,
         body: body?.body,
         sessionCookie:
           body?.sessionCookie ||
