@@ -168,6 +168,21 @@ export async function listInbox(actorId) {
         : [];
       if (!members.includes(uid)) continue;
       const title = cleanText(meta.name, GC_NAME_MAX) || `Group ${gid}`;
+      let lastPreview = meta.lastPreview || "";
+      const lastRows = await db.lRange(gcMsgsKey(gid), -1, -1);
+      if (lastRows?.[0]) {
+        try {
+          const lastMsg = JSON.parse(lastRows[0]);
+          const from = parseUserId(lastMsg?.from);
+          if (from !== null) {
+            const who = await displayNameFor(from, lastMsg.authorName);
+            const body = cleanText(lastMsg.body, 100);
+            lastPreview = body ? `${who}: ${body}`.slice(0, 120) : who;
+          }
+        } catch {
+          /* keep meta preview */
+        }
+      }
       conversations.push({
         kind: "gc",
         threadId: gcInboxValue(gid),
@@ -176,7 +191,7 @@ export async function listInbox(actorId) {
         peerId: null,
         peerName: title,
         memberCount: members.length,
-        lastPreview: meta.lastPreview || "",
+        lastPreview,
         updatedAt: meta.updatedAt || null,
         unread: Math.max(0, Number(unreadMap[gcInboxValue(gid)]) || 0),
       });
@@ -486,6 +501,14 @@ export async function getGroupThread(actorId, groupId) {
     }
   }
 
+  // Rewrite labels from sender UID so bad/stale authorName can't mis-attribute.
+  for (const msg of messages) {
+    const from = parseUserId(msg?.from);
+    if (from === null) continue;
+    msg.authorName = await displayNameFor(from, msg.authorName);
+    msg.from = from;
+  }
+
   await db.hDel(unreadKey(uid), gcInboxValue(gid));
 
   return {
@@ -523,7 +546,8 @@ export async function sendGroupMessage({
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
-  const name = identity.authorName;
+  // Prefer live display name for this UID (ignore stale/wrong binds when possible).
+  const name = await displayNameFor(uid, identity.authorName);
 
   if (await isMuted(uid)) {
     return { ok: false, error: "muted", status: 403 };
@@ -564,6 +588,7 @@ export async function sendGroupMessage({
   };
 
   meta.updatedAt = now;
+  meta.lastFrom = uid;
   meta.lastPreview = `${name}: ${cleanBody}`.slice(0, 120);
   meta.members = members;
 
