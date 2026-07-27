@@ -46,16 +46,30 @@ export function cleanUsername(value, max = 40) {
 
 export function isPlaceholderUsername(name) {
   const n = cleanUsername(name).toLowerCase();
-  return (
+  if (
     !n ||
     n === "profile" ||
     n === "my vortex" ||
     n === "my profile" ||
     n === "guest" ||
     n === "not me" ||
+    n === "you" ||
+    n === "user" ||
+    n === "player" ||
     /^player\s+\d+$/i.test(n) ||
     /^(.)\1{7,}$/i.test(n)
-  );
+  ) {
+    return true;
+  }
+  // Block JS / language junk that shows up from client bugs or spoof attempts
+  if (
+    /^(array|object|undefined|null|nan|true|false|function|string|number|boolean|symbol|bigint)$/i.test(
+      n,
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function namesMatch(a, b) {
@@ -91,7 +105,8 @@ export async function fetchPlayvortexUsername(userId) {
     const username = cleanUsername(
       data?.username || data?.display_name || data?.displayName || data?.name,
     );
-    const out = username || null;
+    const out =
+      username && !isPlaceholderUsername(username) ? username : null;
     lookupMem.set(uid, { at: Date.now(), username: out });
     return out;
   } catch {
@@ -145,13 +160,20 @@ export async function getBoundUsername(userId) {
   if (uid === null) return null;
   const db = await getRedis();
   const name = cleanUsername(await db.get(BIND_KEY(uid)));
-  return name || null;
+  if (!name) return null;
+  // Drop spoofed / junk binds so they cannot keep shipping to clients
+  if (isPlaceholderUsername(name)) {
+    await db.del(BIND_KEY(uid));
+    await db.del(NAME_KEY(name));
+    return null;
+  }
+  return name;
 }
 
 export async function setBoundUsername(userId, username) {
   const uid = parseUserId(userId);
   const name = cleanUsername(username);
-  if (uid === null || !name) return false;
+  if (uid === null || !name || isPlaceholderUsername(name)) return false;
   const db = await getRedis();
   const prev = cleanUsername(await db.get(BIND_KEY(uid)));
   if (prev && !namesMatch(prev, name)) {
@@ -188,23 +210,57 @@ export async function ensureKnownIdentities() {
 
 /**
  * Canonical username for an id (live → bound → known → null).
+ * Never returns placeholder/junk names.
  */
 export async function canonicalUsername(userId) {
   const uid = parseUserId(userId);
   if (uid === null) return null;
   const live = await fetchPlayvortexUsername(uid);
-  if (live) {
+  if (live && !isPlaceholderUsername(live)) {
     await setBoundUsername(uid, live);
     return live;
   }
   const bound = await getBoundUsername(uid);
-  if (bound) return bound;
+  if (bound && !isPlaceholderUsername(bound)) return bound;
   const known = KNOWN_IDENTITIES[uid];
-  if (known) {
+  if (known && !isPlaceholderUsername(known)) {
     await setBoundUsername(uid, known);
     return known;
   }
   return null;
+}
+
+/**
+ * Sweep Redis identity binds and delete junk/spoof placeholders
+ * (e.g. "Array", "Guest", "not me").
+ */
+export async function scrubJunkIdentityBinds() {
+  const db = await getRedis();
+  let scanned = 0;
+  let removed = 0;
+  let cursor = 0;
+  do {
+    const res = await db.scan(cursor, {
+      MATCH: "identity:user:*",
+      COUNT: 200,
+    });
+    cursor = Number(res.cursor ?? 0);
+    const keys = res.keys ?? [];
+    for (const key of keys) {
+      scanned += 1;
+      const name = cleanUsername(await db.get(key));
+      if (!name || isPlaceholderUsername(name)) {
+        const uid = parseUserId(String(key).split(":").pop());
+        if (uid !== null) await clearBoundUsername(uid);
+        else {
+          await db.del(key);
+          if (name) await db.del(NAME_KEY(name));
+        }
+        removed += 1;
+      }
+    }
+  } while (cursor !== 0);
+  return { ok: true, scanned, removed };
 }
 
 /** Read session cookie from JSON body and/or request header (never logged). */
@@ -225,12 +281,13 @@ export function sessionCookieFrom(request, body = {}) {
  * Vercel datacenter IPs (bad-session). Real clients should stamp authorId
  * from a same-origin /me fetch in the extension background.
  *
- * Name lock: live → bound → known → careful first-claim (never placeholders /
- * reserved names). Owner id 1 (TheHaloDeveloper) is allowed via known bind.
+ * Name lock: live → bound → known → Player {id} fallback.
+ * Client-supplied authorName is never first-claimed (spoof vector).
+ * Owner id 1 (TheHaloDeveloper) is allowed via known bind.
  */
 export async function resolveAuthor({
   authorId,
-  authorName,
+  authorName: _ignoredClientName,
   sessionCookie,
   requireSession = false,
 }) {
@@ -282,25 +339,8 @@ export async function resolveAuthor({
     return { ok: false, error: "identity-unverified", status: 403 };
   }
 
-  const claimed = cleanUsername(authorName);
-  const db = await getRedis();
-
-  if (claimed && !isPlaceholderUsername(claimed)) {
-    const owner = parseUserId(await db.get(NAME_KEY(claimed)));
-    const reserved = Object.values(KNOWN_IDENTITIES).some((n) =>
-      namesMatch(n, claimed),
-    );
-    if ((owner === null || owner === uid) && !reserved) {
-      await setBoundUsername(uid, claimed);
-      return {
-        ok: true,
-        authorId: uid,
-        authorName: claimed,
-        source: "claim",
-      };
-    }
-  }
-
+  // First-claim of unverified usernames is a spoof vector — do not honor
+  // client-supplied authorName when live/bound/known identity is missing.
   const fallback = `Player ${uid}`;
   await setBoundUsername(uid, fallback);
   return {

@@ -7,7 +7,11 @@ import {
   reseedKnownForumThreads,
   repairAuthorNames,
 } from "../../../lib/forum.js";
-import { ensureKnownIdentities } from "../../../lib/identity.js";
+import {
+  ensureKnownIdentities,
+  scrubJunkIdentityBinds,
+} from "../../../lib/identity.js";
+import { repairDmThreadNames } from "../../../lib/dm.js";
 import { getRedis } from "../../../lib/redis.js";
 
 const CORS = {
@@ -30,7 +34,7 @@ function resolveAction(request, body) {
   if (fromQuery) return String(fromQuery).toLowerCase();
   if (body?.action) return String(body.action).toLowerCase();
   const m = url.pathname.match(
-    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof|repair-names|seed-identities)\/?$/i,
+    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof|repair-names|seed-identities|scrub-identities|repair-dm)\/?$/i,
   );
   if (m) return m[1].toLowerCase();
   return "repair";
@@ -70,9 +74,12 @@ async function repairThread1Op() {
 }
 
 /**
- * Mod-only forum maintenance hub.
- * Actions: repair | diagnose | rebuild-index | reseed | repair-names | purge-spoof | seed-identities
- * (purge-spoof is now an alias of repair-names — rewrites names, never deletes)
+ * Mod-only maintenance hub (works for every client version — names are
+ * resolved server-side).
+ *
+ * Actions:
+ *   repair | diagnose | rebuild-index | reseed | repair-names | purge-spoof
+ *   seed-identities | scrub-identities | repair-dm
  */
 export async function POST(request) {
   let body = {};
@@ -106,14 +113,26 @@ export async function POST(request) {
       const seeded = await ensureKnownIdentities();
       return json({ ok: true, seeded });
     }
+    if (action === "scrub-identities" || action === "scrub") {
+      const scrubbed = await scrubJunkIdentityBinds();
+      const seeded = await ensureKnownIdentities();
+      return json({ ...scrubbed, seeded });
+    }
+    if (action === "repair-dm" || action === "repair-dms") {
+      const scrubbed = await scrubJunkIdentityBinds();
+      const dm = await repairDmThreadNames();
+      return json({ ok: true, scrubbed, dm });
+    }
     if (
       action === "repair-names" ||
       action === "purge-spoof" ||
       action === "purge"
     ) {
+      const scrubbed = await scrubJunkIdentityBinds();
       const seeded = await ensureKnownIdentities();
       const repaired = await repairAuthorNames();
-      return json({ ...repaired, seeded });
+      const dm = await repairDmThreadNames();
+      return json({ ...repaired, seeded, scrubbed, dm });
     }
     const result = await repairThread1Op();
     return json(result, result.status || 200);

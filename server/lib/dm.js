@@ -4,6 +4,7 @@ import {
   resolveAuthor,
   cleanUsername,
   isPlaceholderUsername,
+  canonicalUsername,
 } from "./identity.js";
 
 export const DM_BODY_MAX = 1000;
@@ -61,6 +62,17 @@ function rateKey(uid) {
 
 async function nextMsgId(db) {
   return Number(await db.incr("dm:meta:next:msg"));
+}
+
+/** Server-owned display name for a user id (never trust client peerName). */
+async function displayNameFor(userId, fallback) {
+  const uid = parseUserId(userId);
+  if (uid === null) return cleanUsername(fallback) || "Guest";
+  const live = await canonicalUsername(uid);
+  if (live && !isPlaceholderUsername(live)) return live;
+  const fb = cleanUsername(fallback);
+  if (fb && !isPlaceholderUsername(fb)) return fb;
+  return `Player ${uid}`;
 }
 
 export async function isMuted(userId) {
@@ -121,10 +133,11 @@ export async function listInbox(actorId) {
       continue;
     }
     const peerId = Number(meta.a) === uid ? Number(meta.b) : Number(meta.a);
-    const peerName =
+    const storedPeerName =
       Number(meta.a) === uid
         ? meta.bName || `Player ${peerId}`
         : meta.aName || `Player ${peerId}`;
+    const peerName = await displayNameFor(peerId, storedPeerName);
     conversations.push({
       threadId: tid,
       peerId,
@@ -175,36 +188,31 @@ export async function getThread(actorId, peerId) {
   // Mark read
   await db.hDel(unreadKey(uid), tid);
 
-  const peerName =
+  const storedPeerName =
     meta && Number(meta.a) === uid
       ? meta.bName
       : meta && Number(meta.b) === uid
         ? meta.aName
         : `Player ${peer}`;
 
+  const peerName = await displayNameFor(peer, storedPeerName);
+
   return {
     ok: true,
     threadId: tid,
     peerId: peer,
-    peerName: peerName || `Player ${peer}`,
+    peerName,
     messages,
     muted: await isMuted(uid),
     peerMuted: await isMuted(peer),
   };
 }
 
-function isPlaceholderPeerName(name) {
-  const n = String(name ?? "")
-    .trim()
-    .toLowerCase();
-  return !n || n === "guest" || /^player\s+\d+$/i.test(n);
-}
-
 export async function sendMessage({
   actorId,
   peerId,
   authorName,
-  peerName,
+  peerName: _clientPeerName,
   body,
   sessionCookie,
 }) {
@@ -235,9 +243,8 @@ export async function sendMessage({
   if (await isMuted(peer)) {
     return { ok: false, error: "peer-muted", status: 403 };
   }
-  const peerLabelRaw = cleanUsername(peerName);
-  const peerLabel =
-    peerLabelRaw && !isPlaceholderUsername(peerLabelRaw) ? peerLabelRaw : "";
+  // Never trust client peerName — resolve peer label from id only.
+  const peerLabel = await displayNameFor(peer, `Player ${peer}`);
 
   const db = await getRedis();
 
@@ -269,8 +276,8 @@ export async function sendMessage({
       id: tid,
       a: Math.min(uid, peer),
       b: Math.max(uid, peer),
-      aName: uid < peer ? name : peerLabel || `Player ${peer}`,
-      bName: uid < peer ? peerLabel || `Player ${peer}` : name,
+      aName: uid < peer ? name : peerLabel,
+      bName: uid < peer ? peerLabel : name,
       updatedAt: now,
       lastPreview: cleanBody.slice(0, 120),
     };
@@ -278,11 +285,8 @@ export async function sendMessage({
 
   if (Number(meta.a) === uid) meta.aName = name;
   if (Number(meta.b) === uid) meta.bName = name;
-  // Fill / refresh peer display name when the client knows it
-  if (peerLabel && !isPlaceholderPeerName(peerLabel)) {
-    if (Number(meta.a) === peer) meta.aName = peerLabel;
-    if (Number(meta.b) === peer) meta.bName = peerLabel;
-  }
+  if (Number(meta.a) === peer) meta.aName = peerLabel;
+  if (Number(meta.b) === peer) meta.bName = peerLabel;
   meta.updatedAt = now;
   meta.lastPreview = cleanBody.slice(0, 120);
 
@@ -390,4 +394,46 @@ export async function unmuteUser({ actorId, targetId }) {
   const db = await getRedis();
   await db.hDel(mutedKey(), String(target));
   return { ok: true, userId: target, unmuted: true };
+}
+
+/**
+ * Rewrite DM thread aName/bName from canonical usernames.
+ * Stops old spoofed peer labels from living in Redis forever.
+ */
+export async function repairDmThreadNames() {
+  const db = await getRedis();
+  let scanned = 0;
+  let updated = 0;
+  let cursor = 0;
+  do {
+    const res = await db.scan(cursor, {
+      MATCH: "dm:thread:*",
+      COUNT: 200,
+    });
+    cursor = Number(res.cursor ?? 0);
+    for (const key of res.keys ?? []) {
+      // Skip message lists: dm:thread:{id}:msgs
+      if (String(key).endsWith(":msgs")) continue;
+      scanned += 1;
+      const raw = await db.get(key);
+      if (!raw) continue;
+      let meta;
+      try {
+        meta = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      const a = parseUserId(meta.a);
+      const b = parseUserId(meta.b);
+      if (a === null || b === null) continue;
+      const aName = await displayNameFor(a, meta.aName);
+      const bName = await displayNameFor(b, meta.bName);
+      if (meta.aName === aName && meta.bName === bName) continue;
+      meta.aName = aName;
+      meta.bName = bName;
+      await db.set(key, JSON.stringify(meta));
+      updated += 1;
+    }
+  } while (cursor !== 0);
+  return { ok: true, scanned, updated };
 }

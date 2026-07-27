@@ -79,11 +79,26 @@ export async function listThreads(categoryId, limit = 30, offset = 0) {
   const stop = start + Math.min(50, Math.max(1, Number(limit) || 30)) - 1;
   const ids = await db.zRange(catKey(cat), start, stop, { REV: true });
   const threads = [];
+  const nameCache = new Map();
   for (const id of ids) {
     const raw = await db.get(threadKey(id));
     if (!raw) continue;
     try {
-      threads.push(JSON.parse(raw));
+      const thread = JSON.parse(raw);
+      const uid = parseUserId(thread.authorId);
+      if (uid !== null) {
+        let name = nameCache.get(uid);
+        if (name === undefined) {
+          name = await canonicalUsername(uid);
+          if (!name || isPlaceholderUsername(name)) {
+            name = cleanUsername(thread.authorName);
+          }
+          if (!name || isPlaceholderUsername(name)) name = `Player ${uid}`;
+          nameCache.set(uid, name);
+        }
+        thread.authorName = name;
+      }
+      threads.push(thread);
     } catch {
       /* skip */
     }
@@ -111,6 +126,29 @@ export async function getThread(threadId) {
       /* skip */
     }
   }
+
+  // Overlay canonical names so old spoofed authorName values never ship to clients.
+  const nameCache = new Map();
+  async function resolveName(uid, fallback) {
+    const idn = parseUserId(uid);
+    if (idn === null) return cleanUsername(fallback) || "Guest";
+    if (nameCache.has(idn)) return nameCache.get(idn);
+    let name = await canonicalUsername(idn);
+    if (!name || isPlaceholderUsername(name)) {
+      name = cleanUsername(fallback);
+    }
+    if (!name || isPlaceholderUsername(name)) name = `Player ${idn}`;
+    nameCache.set(idn, name);
+    return name;
+  }
+
+  if (thread) {
+    thread.authorName = await resolveName(thread.authorId, thread.authorName);
+  }
+  for (const post of posts) {
+    post.authorName = await resolveName(post.authorId, post.authorName);
+  }
+
   return { thread, posts };
 }
 

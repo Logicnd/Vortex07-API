@@ -1,5 +1,10 @@
 import { getRedis } from "./redis.js";
-import { resolveAuthor } from "./identity.js";
+import {
+  resolveAuthor,
+  canonicalUsername,
+  isPlaceholderUsername,
+  cleanUsername,
+} from "./identity.js";
 
 export const COMMENT_BODY_MAX = 1000;
 export const COMMENT_LIST_MAX = 100;
@@ -46,9 +51,25 @@ export async function listComments(gameId, limit = 50, offset = 0) {
     start + Math.min(COMMENT_LIST_MAX, Math.max(1, Number(limit) || 50)) - 1;
   const rows = await db.lRange(listKey(gameId), start, stop);
   const comments = [];
+  const nameCache = new Map();
+
   for (const row of rows) {
     try {
-      comments.push(JSON.parse(row));
+      const comment = JSON.parse(row);
+      const uid = Number(comment.authorId);
+      if (Number.isInteger(uid) && uid >= 1) {
+        let name = nameCache.get(uid);
+        if (name === undefined) {
+          name = await canonicalUsername(uid);
+          if (!name || isPlaceholderUsername(name)) {
+            name = cleanUsername(comment.authorName);
+          }
+          if (!name || isPlaceholderUsername(name)) name = `Player ${uid}`;
+          nameCache.set(uid, name);
+        }
+        comment.authorName = name;
+      }
+      comments.push(comment);
     } catch {
       /* skip */
     }
