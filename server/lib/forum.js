@@ -763,7 +763,7 @@ export async function repairAuthorNames() {
   for (const [uid, bucket] of nameCounts.entries()) {
     // Live playvortex name wins when available
     let canon = await canonicalUsername(uid);
-    if (!canon) {
+    if (!canon || isPlaceholderUsername(canon)) {
       const ranked = [...bucket.values()].sort((a, b) => {
         const ap = isPlaceholderUsername(a.name) ? 1 : 0;
         const bp = isPlaceholderUsername(b.name) ? 1 : 0;
@@ -774,7 +774,7 @@ export async function repairAuthorNames() {
       canon =
         pick && !isPlaceholderUsername(pick.name)
           ? pick.name
-          : pick?.name || `Player ${uid}`;
+          : `Player ${uid}`;
     }
     canonical.set(uid, canon);
     await setBoundUsername(uid, canon);
