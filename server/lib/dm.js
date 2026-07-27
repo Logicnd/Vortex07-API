@@ -291,6 +291,7 @@ export async function sendMessage({
   peerName: _clientPeerName,
   body,
   sessionCookie,
+  writeProof,
 }) {
   const peer = parseUserId(peerId);
   if (peer === null) {
@@ -304,7 +305,8 @@ export async function sendMessage({
     authorId: actorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -403,12 +405,14 @@ export async function createGroupChat({
   memberIds,
   authorName,
   sessionCookie,
+  writeProof,
 }) {
   const identity = await resolveAuthor({
     authorId: actorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -535,6 +539,7 @@ export async function sendGroupMessage({
   authorName,
   body,
   sessionCookie,
+  writeProof,
 }) {
   const gid = parseGroupId(groupId);
   if (!gid) return { ok: false, error: "bad-group", status: 400 };
@@ -546,7 +551,8 @@ export async function sendGroupMessage({
     authorId: actorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -664,12 +670,14 @@ export async function kickGroupMember({
   targetId,
   authorName,
   sessionCookie,
+  writeProof,
 }) {
   const identity = await resolveAuthor({
     authorId: actorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -718,12 +726,14 @@ export async function addGroupMembers({
   memberIds,
   authorName,
   sessionCookie,
+  writeProof,
 }) {
   const identity = await resolveAuthor({
     authorId: actorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -781,12 +791,14 @@ export async function leaveGroupChat({
   groupId,
   authorName,
   sessionCookie,
+  writeProof,
 }) {
   const identity = await resolveAuthor({
     authorId: actorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -834,12 +846,14 @@ export async function deleteGroupChat({
   groupId,
   authorName,
   sessionCookie,
+  writeProof,
 }) {
   const identity = await resolveAuthor({
     authorId: actorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -967,11 +981,18 @@ export async function listMuted(actorId) {
   return { ok: true, muted };
 }
 
-export async function muteUser({ actorId, targetId, reason }) {
-  if (!canModerateForum(actorId)) {
+export async function muteUser({ actorId, targetId, reason, sessionCookie, writeProof }) {
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    sessionCookie,
+    writeProof,
+    requireSession: true,
+  });
+  if (!identity.ok) return identity;
+  if (!canModerateForum(identity.authorId)) {
     return { ok: false, error: "forbidden", status: 403 };
   }
-  const mod = parseUserId(actorId);
+  const mod = identity.authorId;
   const target = parseUserId(targetId);
   if (target === null) return { ok: false, error: "bad-target", status: 400 };
   if (FORUM_MOD_IDS.has(target)) {
@@ -988,8 +1009,15 @@ export async function muteUser({ actorId, targetId, reason }) {
   return { ok: true, userId: target, ...entry };
 }
 
-export async function unmuteUser({ actorId, targetId }) {
-  if (!canModerateForum(actorId)) {
+export async function unmuteUser({ actorId, targetId, sessionCookie, writeProof }) {
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    sessionCookie,
+    writeProof,
+    requireSession: true,
+  });
+  if (!identity.ok) return identity;
+  if (!canModerateForum(identity.authorId)) {
     return { ok: false, error: "forbidden", status: 403 };
   }
   const target = parseUserId(targetId);

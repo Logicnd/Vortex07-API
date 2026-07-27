@@ -1,9 +1,14 @@
 import { deletePost, editPost } from "../../../../../../lib/forum.js";
+import {
+  sessionCookieFrom,
+  writeProofFrom,
+} from "../../../../../../lib/identity.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers":
+    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
 };
 
 function json(data, status = 200) {
@@ -62,6 +67,8 @@ export async function PATCH(request, context) {
       actorId,
       body: body?.body,
       title: body?.title,
+      sessionCookie: sessionCookieFrom(request, body),
+      writeProof: writeProofFrom(request, body),
     });
     if (!result.ok) return json(result, result.status || 400);
     return json(result);
@@ -89,7 +96,13 @@ export async function DELETE(request, context) {
   const actorId = body?.actorId ?? url.searchParams.get("actorId");
 
   try {
-    const result = await deletePost({ threadId, postId, actorId });
+    const result = await deletePost({
+      threadId,
+      postId,
+      actorId,
+      sessionCookie: sessionCookieFrom(request, body),
+      writeProof: writeProofFrom(request, body),
+    });
     if (!result.ok) return json(result, result.status || 400);
     return json(result);
   } catch (err) {

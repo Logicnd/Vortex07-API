@@ -2,15 +2,19 @@ import {
   addComment,
   deleteComment,
   listComments,
-  parseActorId,
   parseGameId,
 } from "../../lib/comments.js";
+import {
+  sessionCookieFrom,
+  writeProofFrom,
+} from "../../lib/identity.js";
 import { guardRead } from "../../lib/read-guard.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Playvortex-Cookie",
+  "Access-Control-Allow-Headers":
+    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
 };
 
 function json(data, status = 200) {
@@ -63,20 +67,20 @@ export async function POST(request) {
     body = {};
   }
 
-  const authorId = parseActorId(body?.authorId ?? body?.actorId);
-  const sessionCookie =
-    body?.sessionCookie || request.headers.get("x-playvortex-cookie") || "";
-  if (authorId === null && !sessionCookie) {
-    return json({ ok: false, error: "bad-actor" }, 400);
+  const sessionCookie = sessionCookieFrom(request, body);
+  const writeProof = writeProofFrom(request, body);
+  if (!sessionCookie && !writeProof) {
+    return json({ ok: false, error: "session-required" }, 401);
   }
 
   try {
     const result = await addComment({
       gameId,
       body: body?.body,
-      authorId,
+      authorId: body?.authorId ?? body?.actorId,
       authorName: body?.authorName,
       sessionCookie,
+      writeProof,
     });
     if (!result.ok) return json(result, result.status || 400);
     return json(result, 201);
@@ -105,12 +109,16 @@ export async function DELETE(request) {
   const url = new URL(request.url);
   const actorId =
     body?.actorId ?? body?.authorId ?? url.searchParams.get("actorId");
+  const sessionCookie = sessionCookieFrom(request, body);
+  const writeProof = writeProofFrom(request, body);
 
   try {
     const result = await deleteComment({
       gameId,
       commentId,
       actorId,
+      sessionCookie,
+      writeProof,
     });
     if (!result.ok) return json(result, result.status || 400);
     return json(result);

@@ -84,6 +84,7 @@ export async function addComment({
   authorId,
   authorName,
   sessionCookie,
+  writeProof,
 }) {
   const db = await getRedis();
   const cleanBody = cleanText(body, COMMENT_BODY_MAX);
@@ -95,7 +96,8 @@ export async function addComment({
     authorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
 
@@ -117,12 +119,22 @@ export async function addComment({
   return { ok: true, comment };
 }
 
-export async function deleteComment({ gameId, commentId, actorId }) {
+export async function deleteComment({
+  gameId,
+  commentId,
+  actorId,
+  sessionCookie,
+  writeProof,
+}) {
   const db = await getRedis();
-  const uid = parseActorId(actorId);
-  if (uid === null) {
-    return { ok: false, error: "bad-actor", status: 400 };
-  }
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    sessionCookie,
+    writeProof,
+    requireSession: true,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
 
   const id = String(commentId || "");
   if (!id) {

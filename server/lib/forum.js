@@ -159,6 +159,7 @@ export async function createThread({
   authorId,
   authorName,
   sessionCookie,
+  writeProof,
 }) {
   const db = await getRedis();
   const cat = normalizeCategoryId(categoryId);
@@ -172,7 +173,8 @@ export async function createThread({
     authorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -224,8 +226,21 @@ export async function createThread({
  * Mod-only: rebind an author's stored display name after identity checks.
  * Open rename was a spoof vector (any client could rewrite any authorId).
  */
-export async function renameAuthor({ authorId, authorName, actorId }) {
-  if (!canModerateForum(actorId)) {
+export async function renameAuthor({
+  authorId,
+  authorName,
+  actorId,
+  sessionCookie,
+  writeProof,
+}) {
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    sessionCookie,
+    writeProof,
+    requireSession: true,
+  });
+  if (!identity.ok) return identity;
+  if (!canModerateForum(identity.authorId)) {
     return { ok: false, error: "forbidden", status: 403 };
   }
   const uid = parseUserId(authorId);
@@ -285,6 +300,7 @@ export async function replyToThread({
   authorId,
   authorName,
   sessionCookie,
+  writeProof,
 }) {
   const db = await getRedis();
   const id = String(threadId || "");
@@ -305,7 +321,8 @@ export async function replyToThread({
     authorId,
     authorName,
     sessionCookie,
-    requireSession: false,
+    writeProof,
+    requireSession: true,
   });
   if (!identity.ok) return identity;
   const uid = identity.authorId;
@@ -349,13 +366,28 @@ export async function replyToThread({
  * Authors may edit their own posts. When editing the first post, they may
  * also rename the thread title (same actor must own the post).
  */
-export async function editPost({ threadId, postId, actorId, body, title }) {
+export async function editPost({
+  threadId,
+  postId,
+  actorId,
+  body,
+  title,
+  sessionCookie,
+  writeProof,
+}) {
   const db = await getRedis();
   const tid = String(threadId || "");
   const pid = String(postId || "");
-  const uid = parseUserId(actorId);
   if (!tid || !pid) return { ok: false, error: "bad-id", status: 400 };
-  if (uid === null) return { ok: false, error: "bad-actor", status: 400 };
+
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    sessionCookie,
+    writeProof,
+    requireSession: true,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
 
   const raw = await db.get(threadKey(tid));
   if (!raw) return { ok: false, error: "not-found", status: 404 };
@@ -400,7 +432,6 @@ export async function editPost({ threadId, postId, actorId, body, title }) {
 
   await db.lSet(postsKey(tid), index, JSON.stringify(post));
 
-  // OP author may rename the thread title
   if (index === 0 && title !== undefined && title !== null) {
     const cleanTitle = cleanText(title, FORUM_TITLE_MAX);
     if (!cleanTitle) return { ok: false, error: "bad-title", status: 400 };
@@ -413,10 +444,23 @@ export async function editPost({ threadId, postId, actorId, body, title }) {
   return { ok: true, thread, post };
 }
 
-export async function deleteThread({ threadId, actorId }) {
+export async function deleteThread({
+  threadId,
+  actorId,
+  sessionCookie,
+  writeProof,
+}) {
   const db = await getRedis();
   const id = String(threadId || "");
-  const uid = parseUserId(actorId);
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    sessionCookie,
+    writeProof,
+    requireSession: true,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
+
   const raw = await db.get(threadKey(id));
   if (!raw) return { ok: false, error: "not-found", status: 404 };
 
@@ -427,8 +471,8 @@ export async function deleteThread({ threadId, actorId }) {
     thread = { id, categoryId: "general" };
   }
 
-  const isOwner = uid !== null && Number(thread.authorId) === uid;
-  if (!canModerateForum(actorId) && !isOwner) {
+  const isOwner = Number(thread.authorId) === uid;
+  if (!canModerateForum(uid) && !isOwner) {
     return { ok: false, error: "forbidden", status: 403 };
   }
 
@@ -440,13 +484,26 @@ export async function deleteThread({ threadId, actorId }) {
   return { ok: true, deleted: "thread", threadId: id };
 }
 
-export async function deletePost({ threadId, postId, actorId }) {
+export async function deletePost({
+  threadId,
+  postId,
+  actorId,
+  sessionCookie,
+  writeProof,
+}) {
   const db = await getRedis();
   const tid = String(threadId || "");
   const pid = String(postId || "");
-  const uid = parseUserId(actorId);
   if (!tid || !pid) return { ok: false, error: "bad-id", status: 400 };
-  if (uid === null) return { ok: false, error: "bad-actor", status: 400 };
+
+  const identity = await resolveAuthor({
+    authorId: actorId,
+    sessionCookie,
+    writeProof,
+    requireSession: true,
+  });
+  if (!identity.ok) return identity;
+  const uid = identity.authorId;
 
   const raw = await db.get(threadKey(tid));
   if (!raw) return { ok: false, error: "not-found", status: 404 };
@@ -483,17 +540,14 @@ export async function deletePost({ threadId, postId, actorId }) {
   }
 
   const isAuthor = Number(removedPost.authorId) === uid;
-  if (!canModerateForum(actorId) && !isAuthor) {
+  if (!canModerateForum(uid) && !isAuthor) {
     return { ok: false, error: "forbidden", status: 403 };
   }
 
-  // Deleting the OP while replies remain would orphan the thread ÔÇö require
-  // full thread delete instead.
   if (removedIndex === 0 && posts.length > 0) {
     return { ok: false, error: "delete-thread-instead", status: 400 };
   }
 
-  // Last post gone ÔåÆ remove the whole thread
   if (posts.length === 0) {
     const cat = normalizeCategoryId(thread.categoryId);
     await db.del(threadKey(tid));
@@ -515,10 +569,6 @@ export async function deletePost({ threadId, postId, actorId }) {
   return { ok: true, deleted: "post", threadId: tid, postId: pid, thread };
 }
 
-/**
- * Rebuild category sorted-set indexes from surviving forum:thread:* keys.
- * Also realign forum:meta:next:* counters to max existing ids.
- */
 export async function rebuildForumIndex() {
   const db = await getRedis();
   const catIds = FORUM_CATEGORIES.map((c) => c.id);

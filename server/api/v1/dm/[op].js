@@ -21,7 +21,8 @@ import { guardRead } from "../../../lib/read-guard.js";
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, X-Playvortex-Cookie",
+  "Access-Control-Allow-Headers":
+    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
 };
 
 function json(data, status = 200) {
@@ -40,6 +41,14 @@ function sessionCookieFrom(request, body) {
   return (
     body?.sessionCookie ||
     request.headers.get("x-playvortex-cookie") ||
+    ""
+  );
+}
+
+function writeProofFrom(request, body) {
+  return (
+    body?.writeProof ||
+    request.headers.get("x-vortex07-proof") ||
     ""
   );
 }
@@ -165,6 +174,7 @@ export async function POST(request, context) {
   const { op, peerId, groupId } = await resolveOp(request, context);
   const body = await readBody(request);
   const sessionCookie = sessionCookieFrom(request, body);
+  const writeProof = writeProofFrom(request, body);
 
   try {
     if (op === "send") {
@@ -175,6 +185,7 @@ export async function POST(request, context) {
         peerName: body?.peerName,
         body: body?.body,
         sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result, 201);
@@ -187,6 +198,7 @@ export async function POST(request, context) {
         memberIds: body?.memberIds,
         authorName: body?.authorName,
         sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result, 201);
@@ -199,6 +211,7 @@ export async function POST(request, context) {
         authorName: body?.authorName,
         body: body?.body,
         sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result, 201);
@@ -211,6 +224,7 @@ export async function POST(request, context) {
         targetId: body?.targetId,
         authorName: body?.authorName,
         sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
@@ -223,6 +237,7 @@ export async function POST(request, context) {
         memberIds: body?.memberIds,
         authorName: body?.authorName,
         sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
@@ -234,6 +249,7 @@ export async function POST(request, context) {
         groupId: groupId ?? body?.groupId,
         authorName: body?.authorName,
         sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
@@ -245,6 +261,7 @@ export async function POST(request, context) {
         groupId: groupId ?? body?.groupId,
         authorName: body?.authorName,
         sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
@@ -255,6 +272,8 @@ export async function POST(request, context) {
         actorId: body?.actorId,
         targetId: body?.targetId,
         reason: body?.reason,
+        sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
@@ -264,6 +283,8 @@ export async function POST(request, context) {
       const result = await unmuteUser({
         actorId: body?.actorId,
         targetId: body?.targetId,
+        sessionCookie,
+        writeProof,
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result);

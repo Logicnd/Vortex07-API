@@ -1,7 +1,6 @@
 import {
   canModerateForum,
   diagnoseForumKeys,
-  FORUM_MOD_IDS,
   purgeSpoofedForum,
   rebuildForumIndex,
   reseedKnownForumThreads,
@@ -9,15 +8,18 @@ import {
 } from "../../../lib/forum.js";
 import {
   ensureKnownIdentities,
+  resolveWriteIdentity,
   scrubJunkIdentityBinds,
 } from "../../../lib/identity.js";
 import { repairDmThreadNames } from "../../../lib/dm.js";
+import { resetProfileLikes, scrubLikeBonuses, scrubSelfLikes } from "../../../lib/likes.js";
 import { getRedis } from "../../../lib/redis.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers":
+    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
 };
 
 function json(data, status = 200) {
@@ -29,12 +31,13 @@ export function OPTIONS() {
 }
 
 function resolveAction(request, body) {
+  // Body wins — /v1/forum/repair rewrite always stamps ?action=repair.
+  if (body?.action) return String(body.action).toLowerCase();
   const url = new URL(request.url);
   const fromQuery = url.searchParams.get("action");
   if (fromQuery) return String(fromQuery).toLowerCase();
-  if (body?.action) return String(body.action).toLowerCase();
   const m = url.pathname.match(
-    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof|repair-names|seed-identities|scrub-identities|repair-dm)\/?$/i,
+    /\/(?:api\/)?v1\/forum\/(diagnose|rebuild-index|reseed|repair|purge-spoof|repair-names|seed-identities|scrub-identities|repair-dm|scrub-like-bonuses|scrub-self-likes|reset-likes)\/?$/i,
   );
   if (m) return m[1].toLowerCase();
   return "repair";
@@ -89,11 +92,11 @@ export async function POST(request) {
     body = {};
   }
 
-  const actorId = Number(body?.actorId);
-  if (
-    !Number.isInteger(actorId) ||
-    (!FORUM_MOD_IDS.has(actorId) && !canModerateForum(actorId))
-  ) {
+  const identity = await resolveWriteIdentity(request, body);
+  if (!identity.ok) {
+    return json(identity, identity.status || 401);
+  }
+  if (!canModerateForum(identity.authorId)) {
     return json({ ok: false, error: "forbidden" }, 403);
   }
 
@@ -124,6 +127,24 @@ export async function POST(request) {
       return json({ ok: true, scrubbed, dm });
     }
     if (
+      action === "scrub-like-bonuses" ||
+      action === "scrub-likes-bonus" ||
+      action === "scrub-bonuses"
+    ) {
+      return json(await scrubLikeBonuses());
+    }
+    if (
+      action === "scrub-self-likes" ||
+      action === "scrub-selflikes" ||
+      action === "purge-self-likes"
+    ) {
+      return json(await scrubSelfLikes());
+    }
+    if (action === "reset-likes" || action === "clear-likes") {
+      const targetId = Number(body?.targetId);
+      return json(await resetProfileLikes(targetId), 200);
+    }
+    if (
       action === "repair-names" ||
       action === "purge-spoof" ||
       action === "purge"
@@ -132,7 +153,8 @@ export async function POST(request) {
       const seeded = await ensureKnownIdentities();
       const repaired = await repairAuthorNames();
       const dm = await repairDmThreadNames();
-      return json({ ...repaired, seeded, scrubbed, dm });
+      const bonuses = await scrubLikeBonuses();
+      return json({ ...repaired, seeded, scrubbed, dm, bonuses });
     }
     const result = await repairThread1Op();
     return json(result, result.status || 200);

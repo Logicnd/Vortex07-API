@@ -1,7 +1,9 @@
 /**
  * Server-owned author identity: authorId → canonical username.
- * Writes should pass a playvortex session cookie so authorId cannot be forged.
+ * Writes must present a playvortex session cookie and/or a short-lived
+ * HMAC write proof — client authorId alone is never trusted.
  */
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { getRedis } from "./redis.js";
 
 const BIND_KEY = (id) => `identity:user:${id}`;
@@ -274,22 +276,90 @@ export function sessionCookieFrom(request, body = {}) {
   }
 }
 
+/** Short-lived write proof from extension background (HMAC). */
+export function writeProofFrom(request, body = {}) {
+  const fromBody = String(body?.writeProof || "").trim();
+  if (fromBody) return fromBody;
+  try {
+    return String(request?.headers?.get?.("x-vortex07-proof") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+const WRITE_PROOF_TTL_SEC = 5 * 60;
+
+function writeSecret() {
+  return String(process.env.VORTEX07_WRITE_SECRET || "").trim();
+}
+
+function timingSafeEqualStr(a, b) {
+  const left = Buffer.from(String(a || ""), "utf8");
+  const right = Buffer.from(String(b || ""), "utf8");
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+/**
+ * Mint a short-lived write proof (server or tests).
+ * Format: v1.{userId}.{exp}.{base64url(username)}.{base64url(hmac)}
+ */
+export function mintWriteProof({ userId, username, nowMs = Date.now() }) {
+  const secret = writeSecret();
+  if (!secret) return null;
+  const uid = parseUserId(userId);
+  const name = cleanUsername(username);
+  if (uid === null || !name || isPlaceholderUsername(name)) return null;
+  const exp = Math.floor(nowMs / 1000) + WRITE_PROOF_TTL_SEC;
+  const payload = `${uid}.${exp}.${name}`;
+  const sig = createHmac("sha256", secret).update(payload).digest("base64url");
+  const nameB64 = Buffer.from(name, "utf8").toString("base64url");
+  return `v1.${uid}.${exp}.${nameB64}.${sig}`;
+}
+
+/**
+ * Verify extension write proof. Returns { id, username } or null.
+ */
+export function verifyWriteProof(token) {
+  const secret = writeSecret();
+  if (!secret) return null;
+  const raw = String(token || "").trim();
+  const parts = raw.split(".");
+  if (parts.length !== 5 || parts[0] !== "v1") return null;
+  const uid = parseUserId(parts[1]);
+  const exp = Number(parts[2]);
+  if (uid === null || !Number.isFinite(exp)) return null;
+  if (exp < Math.floor(Date.now() / 1000)) return null;
+  let name = "";
+  try {
+    name = cleanUsername(Buffer.from(parts[3], "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!name || isPlaceholderUsername(name)) return null;
+  const payload = `${uid}.${exp}.${name}`;
+  const expected = createHmac("sha256", secret)
+    .update(payload)
+    .digest("base64url");
+  if (!timingSafeEqualStr(parts[4], expected)) return null;
+  return { id: uid, username: name };
+}
+
 /**
  * Resolve author for writes. Server owns the display name.
  *
- * Session cookie verify is best-effort only — playvortex often rejects
- * Vercel datacenter IPs (bad-session). Real clients should stamp authorId
- * from a same-origin /me fetch in the extension background.
+ * Identity MUST come from:
+ *   1) verified PlayVortex session cookie (/me), or
+ *   2) short-lived HMAC write proof minted by the extension after local /me
  *
- * Name lock: live → bound → known → Player {id} fallback.
- * Client-supplied authorName is never first-claimed (spoof vector).
- * Owner id 1 (TheHaloDeveloper) is allowed via known bind.
+ * Client authorId / authorName are never trusted for identity.
  */
 export async function resolveAuthor({
-  authorId,
+  authorId: _ignoredAuthorId,
   authorName: _ignoredClientName,
   sessionCookie,
-  requireSession = false,
+  writeProof,
+  requireSession = true,
 }) {
   const cookie = String(sessionCookie || "").trim();
   if (cookie) {
@@ -303,50 +373,44 @@ export async function resolveAuthor({
         source: "session",
       };
     }
-    // Never hard-fail here — CF/Vercel IP blocks are common.
-    if (requireSession) {
-      return { ok: false, error: "bad-session", status: 401 };
+  }
+
+  const proofToken = String(writeProof || "").trim();
+  if (proofToken) {
+    const verified = verifyWriteProof(proofToken);
+    if (verified?.id) {
+      await setBoundUsername(verified.id, verified.username);
+      const live = await canonicalUsername(verified.id);
+      const name =
+        live && !isPlaceholderUsername(live) ? live : verified.username;
+      return {
+        ok: true,
+        authorId: verified.id,
+        authorName: name,
+        source: "proof",
+      };
     }
-  } else if (requireSession) {
+    if (requireSession) {
+      return { ok: false, error: "bad-proof", status: 401 };
+    }
+  }
+
+  if (!requireSession) {
     return { ok: false, error: "session-required", status: 401 };
   }
-
-  const uid = parseUserId(authorId);
-  if (uid === null) {
-    return { ok: false, error: "bad-actor", status: 400 };
+  if (cookie) {
+    return { ok: false, error: "bad-session", status: 401 };
   }
+  return { ok: false, error: "session-required", status: 401 };
+}
 
-  const live = await fetchPlayvortexUsername(uid);
-  if (live) {
-    await setBoundUsername(uid, live);
-    return { ok: true, authorId: uid, authorName: live, source: "live" };
-  }
-
-  const bound = await getBoundUsername(uid);
-  if (bound && !isPlaceholderUsername(bound)) {
-    return { ok: true, authorId: uid, authorName: bound, source: "bound" };
-  }
-
-  const known = KNOWN_IDENTITIES[uid];
-  if (known) {
-    await setBoundUsername(uid, known);
-    return { ok: true, authorId: uid, authorName: known, source: "known" };
-  }
-
-  // Low ids with no known/bound/live identity: reject (stops 1..99 flood claims).
-  // Id 1 is seeded as TheHaloDeveloper above via KNOWN_IDENTITIES.
-  if (uid < 1000) {
-    return { ok: false, error: "identity-unverified", status: 403 };
-  }
-
-  // First-claim of unverified usernames is a spoof vector — do not honor
-  // client-supplied authorName when live/bound/known identity is missing.
-  const fallback = `Player ${uid}`;
-  await setBoundUsername(uid, fallback);
-  return {
-    ok: true,
-    authorId: uid,
-    authorName: fallback,
-    source: "fallback",
-  };
+/** Convenience: resolve write identity from request + JSON body. */
+export async function resolveWriteIdentity(request, body = {}) {
+  return resolveAuthor({
+    authorId: body?.authorId ?? body?.actorId,
+    authorName: body?.authorName,
+    sessionCookie: sessionCookieFrom(request, body),
+    writeProof: writeProofFrom(request, body),
+    requireSession: true,
+  });
 }

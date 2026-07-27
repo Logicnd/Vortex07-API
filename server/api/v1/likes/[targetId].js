@@ -1,9 +1,15 @@
-import { getLikeStatus, parseUserId, toggleLike } from "../../../lib/likes.js";
+import {
+  getLikeStatus,
+  parseUserId,
+  resolveLikeActor,
+  toggleLike,
+} from "../../../lib/likes.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers":
+    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
 };
 
 function json(data, status = 200) {
@@ -69,12 +75,13 @@ export async function POST(request, context) {
     body = {};
   }
 
-  const url = new URL(request.url);
-  const actorId = parseUserId(body?.actorId ?? url.searchParams.get("actorId"));
-  if (actorId === null) return json({ ok: false, error: "bad-actor" }, 400);
-
   try {
-    const result = await toggleLike(targetId, actorId);
+    const resolved = await resolveLikeActor(request, body);
+    if (!resolved.ok) {
+      return json(resolved, resolved.status || 400);
+    }
+
+    const result = await toggleLike(targetId, resolved.actorId, request);
     if (!result.ok) return json(result, result.status || 400);
     return json(result);
   } catch (err) {

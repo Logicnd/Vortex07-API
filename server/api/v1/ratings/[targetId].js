@@ -5,11 +5,13 @@ import {
   parseVote,
   setRating,
 } from "../../../lib/ratings.js";
+import { resolveWriteIdentity } from "../../../lib/identity.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers":
+    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
 };
 
 function json(data, status = 200) {
@@ -76,11 +78,6 @@ export async function POST(request, context) {
   }
 
   const url = new URL(request.url);
-  const actorId = parseActorId(
-    body?.actorId ?? url.searchParams.get("actorId"),
-  );
-  if (actorId === null) return json({ ok: false, error: "bad-actor" }, 400);
-
   const vote = parseVote(
     body?.vote ?? body?.rating ?? url.searchParams.get("vote"),
   );
@@ -89,7 +86,10 @@ export async function POST(request, context) {
   }
 
   try {
-    const result = await setRating(targetId, actorId, vote);
+    const identity = await resolveWriteIdentity(request, body);
+    if (!identity.ok) return json(identity, identity.status || 401);
+
+    const result = await setRating(targetId, identity.authorId, vote);
     if (!result.ok) return json(result, result.status || 400);
     return json(result);
   } catch (err) {

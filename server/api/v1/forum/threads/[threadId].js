@@ -1,9 +1,14 @@
 import { deleteThread, getThread } from "../../../../lib/forum.js";
+import {
+  sessionCookieFrom,
+  writeProofFrom,
+} from "../../../../lib/identity.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers":
+    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
 };
 
 function json(data, status = 200) {
@@ -65,7 +70,12 @@ export async function DELETE(request, context) {
   const actorId = body?.actorId ?? url.searchParams.get("actorId");
 
   try {
-    const result = await deleteThread({ threadId, actorId });
+    const result = await deleteThread({
+      threadId,
+      actorId,
+      sessionCookie: sessionCookieFrom(request, body),
+      writeProof: writeProofFrom(request, body),
+    });
     if (!result.ok) return json(result, result.status || 400);
     return json(result);
   } catch (err) {
