@@ -1,9 +1,9 @@
 /**
  * Server-owned author identity: authorId → canonical username.
- * Writes must present a playvortex session cookie and/or a short-lived
- * HMAC write proof — client authorId alone is never trusted.
+ * Writes must present a PlayVortex session cookie that this server verifies
+ * against /api/users/me. Client authorId / HMAC proofs are never trusted.
  */
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { getRedis } from "./redis.js";
 
 const BIND_KEY = (id) => `identity:user:${id}`;
@@ -117,14 +117,48 @@ export async function fetchPlayvortexUsername(userId) {
   }
 }
 
+function pickUsernameField(...candidates) {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return cleanUsername(candidate);
+    }
+    if (Array.isArray(candidate)) {
+      const first = candidate.find((v) => typeof v === "string" && v.trim());
+      if (first) return cleanUsername(first);
+    }
+  }
+  return "";
+}
+
+function parseMePayload(data) {
+  if (!data || typeof data !== "object") return null;
+  const id = parseUserId(
+    data?.id ?? data?.user_id ?? data?.userId ?? data?.user?.id,
+  );
+  const username = pickUsernameField(
+    data?.username,
+    data?.display_name,
+    data?.displayName,
+    data?.name,
+    data?.user?.username,
+    data?.user?.display_name,
+    data?.user?.displayName,
+    data?.user?.name,
+  );
+  if (id === null || !username || isPlaceholderUsername(username)) return null;
+  return { id, username };
+}
+
 /**
- * Verify a browser session cookie against playvortex /api/users/me.
- * Cookie is used for this request only — never stored.
- * Note: playvortex/CF often rejects datacenter IPs, so callers must soft-fallback.
+ * Probe playvortex /api/users/me with a session cookie.
+ * Distinguishes real auth failures from infra/CF blocks so the extension can
+ * warm a short Redis session when the browser already verified the jar.
+ *
+ * @returns {Promise<{ kind: 'ok'|'unauthorized'|'unreachable'|'no-cookie', me: {id:number,username:string}|null }>}
  */
-export async function fetchPlayvortexMe(sessionCookie) {
+export async function probePlayvortexMe(sessionCookie) {
   const cookie = String(sessionCookie || "").trim();
-  if (!cookie) return null;
+  if (!cookie) return { kind: "no-cookie", me: null };
 
   const endpoints = [
     PLAYVORTEX_ME,
@@ -139,22 +173,107 @@ export async function fetchPlayvortexMe(sessionCookie) {
     Referer: "https://playvortex.io/",
   };
 
+  let sawUnauthorized = false;
+  let sawUnreachable = false;
+
   for (const url of endpoints) {
     try {
       const res = await fetch(url, { headers, cache: "no-store" });
-      if (!res.ok) continue;
-      const data = await res.json();
-      const id = parseUserId(data?.id ?? data?.user_id ?? data?.userId);
-      const username = cleanUsername(
-        data?.username || data?.display_name || data?.displayName || data?.name,
-      );
-      if (id === null || !username || isPlaceholderUsername(username)) continue;
-      return { id, username };
+      const text = await res.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = null;
+      }
+
+      if (res.ok) {
+        const parsed = parseMePayload(data);
+        if (parsed) return { kind: "ok", me: parsed };
+      }
+
+      const looksLikeCf =
+        !data &&
+        /cloudflare|cf-ray|just a moment|attention required/i.test(
+          String(text || ""),
+        );
+
+      if (res.status === 401 || (res.status === 403 && data)) {
+        sawUnauthorized = true;
+        continue;
+      }
+      if (looksLikeCf || res.status >= 500 || res.status === 403) {
+        sawUnreachable = true;
+        continue;
+      }
+      if (!data) {
+        sawUnreachable = true;
+        continue;
+      }
+      sawUnauthorized = true;
     } catch {
-      /* try next */
+      sawUnreachable = true;
     }
   }
-  return null;
+
+  if (sawUnreachable && !sawUnauthorized) {
+    return { kind: "unreachable", me: null };
+  }
+  if (sawUnreachable && sawUnauthorized) {
+    // Mixed signals — prefer unreachable so a browser-warmed cache can help
+    // when one edge is challenged and another returns a generic 401 page.
+    return { kind: "unreachable", me: null };
+  }
+  return { kind: "unauthorized", me: null };
+}
+
+/**
+ * Verify a browser session cookie against playvortex /api/users/me.
+ * Cookie is used for this request only — never stored.
+ * HMAC "proof" soft-fallback was removed after the client-shipped secret
+ * let anyone impersonate TheHaloDeveloper.
+ */
+export async function fetchPlayvortexMe(sessionCookie) {
+  const probe = await probePlayvortexMe(sessionCookie);
+  return probe.kind === "ok" ? probe.me : null;
+}
+
+/**
+ * Warm Redis session cache from a cookie the extension already verified.
+ * Live /me wins; on infra/CF failure only, accept the browser-asserted me.
+ */
+export async function warmSessionFromBrowser(sessionCookie, clientMe = {}) {
+  const cookie = String(sessionCookie || "").trim();
+  if (!cookie) {
+    return { ok: false, error: "session-required", status: 401 };
+  }
+
+  const probe = await probePlayvortexMe(cookie);
+  if (probe.kind === "ok" && probe.me) {
+    await setBoundUsername(probe.me.id, probe.me.username);
+    await cacheSession(cookie, probe.me);
+    return { ok: true, me: probe.me, source: "session" };
+  }
+
+  if (probe.kind === "unauthorized" || probe.kind === "no-cookie") {
+    return { ok: false, error: "bad-session", status: 401 };
+  }
+
+  const id = parseUserId(clientMe?.id ?? clientMe?.user_id ?? clientMe?.userId);
+  const username = cleanUsername(
+    clientMe?.username ?? clientMe?.display_name ?? clientMe?.displayName,
+  );
+  if (id === null || !username || isPlaceholderUsername(username)) {
+    return { ok: false, error: "bad-session", status: 401 };
+  }
+
+  await setBoundUsername(id, username);
+  await cacheSession(cookie, { id, username });
+  return {
+    ok: true,
+    me: { id, username },
+    source: "browser-fallback",
+  };
 }
 
 export async function getBoundUsername(userId) {
@@ -265,10 +384,16 @@ export async function scrubJunkIdentityBinds() {
   return { ok: true, scanned, removed };
 }
 
-/** Read session cookie from JSON body and/or request header (never logged). */
-export function sessionCookieFrom(request, body = {}) {
-  const fromBody = String(body?.sessionCookie || "").trim();
-  if (fromBody) return fromBody;
+const SESSION_CACHE_TTL_SEC = 15 * 60;
+// v2: old keys may have been poisoned by the retired HMAC proof soft-fallback.
+const SESSION_CACHE_KEY = (hash) => `identity:session:v2:${hash}`;
+
+function hashCookie(cookie) {
+  return createHash("sha256").update(String(cookie)).digest("hex");
+}
+
+/** Read session cookie from request header only (never body — reduces CSRF/paste surface). */
+export function sessionCookieFrom(request, _body = {}) {
   try {
     return String(request?.headers?.get?.("x-playvortex-cookie") || "").trim();
   } catch {
@@ -276,21 +401,13 @@ export function sessionCookieFrom(request, body = {}) {
   }
 }
 
-/** Short-lived write proof from extension background (HMAC). */
-export function writeProofFrom(request, body = {}) {
-  const fromBody = String(body?.writeProof || "").trim();
-  if (fromBody) return fromBody;
-  try {
-    return String(request?.headers?.get?.("x-vortex07-proof") || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-const WRITE_PROOF_TTL_SEC = 5 * 60;
-
-function writeSecret() {
-  return String(process.env.VORTEX07_WRITE_SECRET || "").trim();
+/**
+ * Write proofs are retired. The HMAC secret was shipped in the extension, so
+ * anyone could mint "I am user 1" proofs. Identity is session-cookie + /me only.
+ * Kept as a no-op export so older callers keep compiling.
+ */
+export function writeProofFrom(_request, _body = {}) {
+  return "";
 }
 
 function timingSafeEqualStr(a, b) {
@@ -300,111 +417,100 @@ function timingSafeEqualStr(a, b) {
   return timingSafeEqual(left, right);
 }
 
-/**
- * Mint a short-lived write proof (server or tests).
- * Format: v1.{userId}.{exp}.{base64url(username)}.{base64url(hmac)}
- */
-export function mintWriteProof({ userId, username, nowMs = Date.now() }) {
-  const secret = writeSecret();
-  if (!secret) return null;
-  const uid = parseUserId(userId);
-  const name = cleanUsername(username);
-  if (uid === null || !name || isPlaceholderUsername(name)) return null;
-  const exp = Math.floor(nowMs / 1000) + WRITE_PROOF_TTL_SEC;
-  const payload = `${uid}.${exp}.${name}`;
-  const sig = createHmac("sha256", secret).update(payload).digest("base64url");
-  const nameB64 = Buffer.from(name, "utf8").toString("base64url");
-  return `v1.${uid}.${exp}.${nameB64}.${sig}`;
+/** @deprecated Proof minting disabled — always returns null. */
+export function mintWriteProof() {
+  return null;
 }
 
-/**
- * Verify extension write proof. Returns { id, username } or null.
- */
-export function verifyWriteProof(token) {
-  const secret = writeSecret();
-  if (!secret) return null;
-  const raw = String(token || "").trim();
-  const parts = raw.split(".");
-  if (parts.length !== 5 || parts[0] !== "v1") return null;
-  const uid = parseUserId(parts[1]);
-  const exp = Number(parts[2]);
-  if (uid === null || !Number.isFinite(exp)) return null;
-  if (exp < Math.floor(Date.now() / 1000)) return null;
-  let name = "";
+/** @deprecated Proof verification disabled — always returns null. */
+export function verifyWriteProof() {
+  return null;
+}
+
+async function sessionFromCache(cookie) {
   try {
-    name = cleanUsername(Buffer.from(parts[3], "base64url").toString("utf8"));
+    const db = await getRedis();
+    const raw = await db.get(SESSION_CACHE_KEY(hashCookie(cookie)));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const id = parseUserId(parsed?.id);
+    const username = cleanUsername(parsed?.username);
+    if (id === null || !username || isPlaceholderUsername(username)) return null;
+    return { id, username };
   } catch {
     return null;
   }
-  if (!name || isPlaceholderUsername(name)) return null;
-  const payload = `${uid}.${exp}.${name}`;
-  const expected = createHmac("sha256", secret)
-    .update(payload)
-    .digest("base64url");
-  if (!timingSafeEqualStr(parts[4], expected)) return null;
-  return { id: uid, username: name };
+}
+
+async function cacheSession(cookie, me) {
+  try {
+    const db = await getRedis();
+    await db.set(
+      SESSION_CACHE_KEY(hashCookie(cookie)),
+      JSON.stringify({ id: me.id, username: me.username }),
+      { EX: SESSION_CACHE_TTL_SEC },
+    );
+  } catch {
+    /* cache is best-effort */
+  }
 }
 
 /**
  * Resolve author for writes. Server owns the display name.
  *
- * Identity MUST come from:
- *   1) verified PlayVortex session cookie (/me), or
- *   2) short-lived HMAC write proof minted by the extension after local /me
+ * Identity ONLY from a PlayVortex session cookie verified against /me
+ * (or a Redis cache entry written after a successful /me — never from proof).
  *
- * Client authorId / authorName are never trusted for identity.
+ * Client authorId / authorName / HMAC writeProof are never trusted.
+ * The old proof soft-fallback let anyone mint "I am Halo" with the leaked
+ * extension WRITE_SECRET — that path is permanently closed.
  */
 export async function resolveAuthor({
   authorId: _ignoredAuthorId,
   authorName: _ignoredClientName,
   sessionCookie,
-  writeProof,
+  writeProof: _ignoredWriteProof,
   requireSession = true,
 }) {
   const cookie = String(sessionCookie || "").trim();
   if (cookie) {
-    const me = await fetchPlayvortexMe(cookie);
-    if (me) {
-      await setBoundUsername(me.id, me.username);
+    const cached = await sessionFromCache(cookie);
+    if (cached) {
+      await setBoundUsername(cached.id, cached.username);
       return {
         ok: true,
-        authorId: me.id,
-        authorName: me.username,
+        authorId: cached.id,
+        authorName: cached.username,
+        source: "session-cache",
+      };
+    }
+
+    const probe = await probePlayvortexMe(cookie);
+    if (probe.kind === "ok" && probe.me) {
+      await setBoundUsername(probe.me.id, probe.me.username);
+      await cacheSession(cookie, probe.me);
+      return {
+        ok: true,
+        authorId: probe.me.id,
+        authorName: probe.me.username,
         source: "session",
       };
     }
-  }
-
-  const proofToken = String(writeProof || "").trim();
-  if (proofToken) {
-    const verified = verifyWriteProof(proofToken);
-    if (verified?.id) {
-      await setBoundUsername(verified.id, verified.username);
-      const live = await canonicalUsername(verified.id);
-      const name =
-        live && !isPlaceholderUsername(live) ? live : verified.username;
-      return {
-        ok: true,
-        authorId: verified.id,
-        authorName: name,
-        source: "proof",
-      };
+    // Infra/CF block with no cache — ask the extension to POST /v1/identity/session
+    // after a local Cookie-header /me success (see warmSessionFromBrowser).
+    if (probe.kind === "unreachable") {
+      return { ok: false, error: "session-unreachable", status: 401 };
     }
-    if (requireSession) {
-      return { ok: false, error: "bad-proof", status: 401 };
-    }
+    return { ok: false, error: "bad-session", status: 401 };
   }
 
   if (!requireSession) {
     return { ok: false, error: "session-required", status: 401 };
   }
-  if (cookie) {
-    return { ok: false, error: "bad-session", status: 401 };
-  }
   return { ok: false, error: "session-required", status: 401 };
 }
 
-/** Convenience: resolve write identity from request + JSON body. */
+/** Convenience: resolve write identity from request headers. */
 export async function resolveWriteIdentity(request, body = {}) {
   return resolveAuthor({
     authorId: body?.authorId ?? body?.actorId,
@@ -414,3 +520,5 @@ export async function resolveWriteIdentity(request, body = {}) {
     requireSession: true,
   });
 }
+
+export { timingSafeEqualStr };

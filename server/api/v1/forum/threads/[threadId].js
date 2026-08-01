@@ -8,7 +8,7 @@ const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
+    "Content-Type, X-Playvortex-Cookie",
 };
 
 function json(data, status = 200) {

@@ -14,6 +14,10 @@
       "destination": "/api/health"
     },
     {
+      "source": "/v1/identity/session",
+      "destination": "/api/v1/identity/session"
+    },
+    {
       "source": "/v1/likes/:targetId",
       "destination": "/api/v1/likes/:targetId"
     },
@@ -154,12 +158,8 @@
       "destination": "/api/v1/dm/mod-unmute"
     },
     {
-      "source": "/v1/follow",
-      "destination": "/api/v1/dm/follow-status"
-    },
-    {
-      "source": "/v1/follow/:op",
-      "destination": "/api/v1/dm/follow-:op"
+      "source": "/v1/dm/system-notify",
+      "destination": "/api/v1/dm/system-notify"
     }
   ]
 }

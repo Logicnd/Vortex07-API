@@ -69,7 +69,7 @@ export async function POST(request) {
 
   const sessionCookie = sessionCookieFrom(request, body);
   const writeProof = writeProofFrom(request, body);
-  if (!sessionCookie && !writeProof) {
+  if (!sessionCookie) {
     return json({ ok: false, error: "session-required" }, 401);
   }
 

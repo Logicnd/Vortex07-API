@@ -8,6 +8,10 @@ function downKey(targetId) {
   return `ratings:${targetId}:down`;
 }
 
+function byUserKey(actorId) {
+  return `ratings:by-user:${actorId}`;
+}
+
 export function parseTargetId(value) {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) return null;
@@ -62,6 +66,15 @@ export async function getRatingStatus(targetId, actorId) {
   };
 }
 
+/** How many distinct games this user has rated (up or down). */
+export async function getUserRatedCount(actorId) {
+  const id = parseActorId(actorId);
+  if (id === null) return { ok: false, error: "bad-user", count: 0 };
+  const db = await getRedis();
+  const count = Number(await db.sCard(byUserKey(id))) || 0;
+  return { ok: true, userId: id, count };
+}
+
 /**
  * Set or toggle a like/dislike.
  * - Same vote again → clear
@@ -77,6 +90,7 @@ export async function setRating(targetId, actorId, vote) {
   const up = upKey(targetId);
   const down = downKey(targetId);
   const member = String(actorId);
+  const game = String(targetId);
 
   const [isUp, isDown] = await Promise.all([
     db.sIsMember(up, member),
@@ -93,14 +107,19 @@ export async function setRating(targetId, actorId, vote) {
 
   const ops = [];
   if (next === "up") {
-    ops.push(db.sAdd(up, member), db.sRem(down, member));
+    ops.push(db.sAdd(up, member), db.sRem(down, member), db.sAdd(byUserKey(actorId), game));
   } else if (next === "down") {
-    ops.push(db.sAdd(down, member), db.sRem(up, member));
+    ops.push(db.sAdd(down, member), db.sRem(up, member), db.sAdd(byUserKey(actorId), game));
   } else {
-    ops.push(db.sRem(up, member), db.sRem(down, member));
+    ops.push(
+      db.sRem(up, member),
+      db.sRem(down, member),
+      db.sRem(byUserKey(actorId), game),
+    );
   }
   await Promise.all(ops);
 
   const status = await getRatingStatus(targetId, actorId);
-  return { ok: true, ...status };
+  const rated = await getUserRatedCount(actorId);
+  return { ok: true, ...status, ratedCount: rated.count };
 }

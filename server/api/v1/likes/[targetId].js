@@ -2,6 +2,7 @@ import {
   getLikeStatus,
   parseUserId,
   resolveLikeActor,
+  setLike,
   toggleLike,
 } from "../../../lib/likes.js";
 import { resolveWriteIdentity } from "../../../lib/identity.js";
@@ -42,6 +43,17 @@ async function resolveTargetId(request, context) {
   }
 }
 
+/** Explicit liked/action from body — never trust client actorId for identity. */
+function desiredLikedFromBody(body) {
+  if (typeof body?.liked === "boolean") return body.liked;
+  const action = String(body?.action || "").toLowerCase();
+  if (action === "like" || action === "up") return true;
+  if (action === "unlike" || action === "down" || action === "remove") {
+    return false;
+  }
+  return null; // legacy toggle
+}
+
 export function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS });
 }
@@ -50,7 +62,7 @@ export async function GET(request, context) {
   const targetId = await resolveTargetId(request, context);
   if (targetId === null) return json({ ok: false, error: "bad-target" }, 400);
 
-  // Public count is fine; myVote only when the request is authenticated.
+  // Public count is fine; myVote only from cookie/proof — never ?actorId=.
   let actorId = null;
   const identity = await resolveWriteIdentity(request, {});
   if (identity.ok) actorId = identity.authorId;
@@ -81,10 +93,14 @@ export async function POST(request, context) {
   try {
     const resolved = await resolveLikeActor(request, body);
     if (!resolved.ok) {
-      return json(resolved, resolved.status || 400);
+      return json(resolved, resolved.status || 401);
     }
 
-    const result = await toggleLike(targetId, resolved.actorId, request);
+    const desired = desiredLikedFromBody(body);
+    const result =
+      desired === null
+        ? await toggleLike(targetId, resolved.actorId, request)
+        : await setLike(targetId, resolved.actorId, desired, request);
     if (!result.ok) return json(result, result.status || 400);
     return json(result);
   } catch (err) {

@@ -14,6 +14,10 @@ export const GC_NAME_MAX = 60;
 export const GC_MEMBERS_MIN = 3;
 export const GC_MEMBERS_MAX = 20;
 
+/** Fixed system peer for quest / bulletin notifies (not a real login). */
+export const SYSTEM_PEER_ID = Number(process.env.VORTEX07_SYSTEM_PEER_ID) || 7007;
+export const SYSTEM_PEER_NAME = "Vortex07";
+
 export { FORUM_MOD_IDS, canModerateForum };
 
 function parseUserId(value) {
@@ -395,6 +399,80 @@ export async function sendMessage({
   };
   await db.lPush(modlogKey(), JSON.stringify(logEntry));
   await db.lTrim(modlogKey(), 0, DM_MODLOG_MAX - 1);
+
+  return { ok: true, threadId: tid, message: msg, meta };
+}
+
+export async function sendSystemMessage({ toUserId, body, peerName = "Vortex07" }) {
+  const peer = parseUserId(toUserId);
+  if (peer === null) {
+    return { ok: false, error: "bad-peer", status: 400 };
+  }
+
+  const cleanBody = cleanText(body, DM_BODY_MAX);
+  if (!cleanBody) return { ok: false, error: "bad-body", status: 400 };
+
+  // Plain text + same-site paths only (no external URLs).
+  if (/https?:\/\//i.test(cleanBody) || /discord\.gg\//i.test(cleanBody)) {
+    return { ok: false, error: "external-links-blocked", status: 400 };
+  }
+
+  const uid = SYSTEM_PEER_ID;
+  if (peer === uid) {
+    return { ok: false, error: "bad-peer", status: 400 };
+  }
+
+  const name = cleanUsername(peerName) || SYSTEM_PEER_NAME;
+  const peerLabel = await displayNameFor(peer, `Player ${peer}`);
+  const db = await getRedis();
+  const tid = threadIdFor(uid, peer);
+  const now = new Date().toISOString();
+
+  let meta = null;
+  const existing = await db.get(threadKey(tid));
+  if (existing) {
+    try {
+      meta = JSON.parse(existing);
+    } catch {
+      meta = null;
+    }
+  }
+
+  if (!meta) {
+    meta = {
+      id: tid,
+      a: Math.min(uid, peer),
+      b: Math.max(uid, peer),
+      aName: uid < peer ? name : peerLabel,
+      bName: uid < peer ? peerLabel : name,
+      updatedAt: now,
+      lastPreview: cleanBody.slice(0, 120),
+      system: true,
+    };
+  }
+
+  if (Number(meta.a) === uid) meta.aName = name;
+  if (Number(meta.b) === uid) meta.bName = name;
+  if (Number(meta.a) === peer) meta.aName = peerLabel;
+  if (Number(meta.b) === peer) meta.bName = peerLabel;
+  meta.updatedAt = now;
+  meta.lastPreview = cleanBody.slice(0, 120);
+  meta.system = true;
+
+  const msg = {
+    id: String(await nextMsgId(db)),
+    from: uid,
+    body: cleanBody,
+    createdAt: now,
+    system: true,
+  };
+
+  await db.rPush(msgsKey(tid), JSON.stringify(msg));
+  await db.set(threadKey(tid), JSON.stringify(meta));
+  const score = Date.now();
+  await db.zAdd(userThreadsKey(uid), { score, value: tid });
+  await db.zAdd(userThreadsKey(peer), { score, value: tid });
+  await db.hIncrBy(unreadKey(peer), tid, 1);
 
   return { ok: true, threadId: tid, message: msg, meta };
 }

@@ -1,5 +1,6 @@
 import {
   getRatingStatus,
+  getUserRatedCount,
   parseActorId,
   parseTargetId,
   parseVote,
@@ -18,11 +19,11 @@ function json(data, status = 200) {
   return Response.json(data, { status, headers: CORS });
 }
 
-function targetIdFromRequest(request, context) {
+function rawTargetFromRequest(request, context) {
   const fromPath = new URL(request.url).pathname.match(
-    /\/(?:api\/)?v1\/ratings\/(\d+)\/?$/,
+    /\/(?:api\/)?v1\/ratings\/([^/?#]+)\/?$/,
   );
-  if (fromPath) return fromPath[1];
+  if (fromPath) return decodeURIComponent(fromPath[1]);
 
   const params = context?.params;
   if (params && typeof params.then === "function") {
@@ -31,13 +32,13 @@ function targetIdFromRequest(request, context) {
   return params?.targetId ?? null;
 }
 
-async function resolveTargetId(request, context) {
-  const direct = targetIdFromRequest(request, context);
-  if (direct !== null) return parseTargetId(direct);
+async function resolveRawTarget(request, context) {
+  const direct = rawTargetFromRequest(request, context);
+  if (direct !== null) return direct;
 
   try {
     const params = await context?.params;
-    return parseTargetId(params?.targetId);
+    return params?.targetId ?? null;
   } catch {
     return null;
   }
@@ -48,7 +49,28 @@ export function OPTIONS() {
 }
 
 export async function GET(request, context) {
-  const targetId = await resolveTargetId(request, context);
+  const raw = await resolveRawTarget(request, context);
+  const url = new URL(request.url);
+
+  // GET /v1/ratings/by?userId=123 — distinct games this user has rated
+  if (String(raw || "").toLowerCase() === "by") {
+    const userId = parseActorId(
+      url.searchParams.get("userId") || url.searchParams.get("playvortexId"),
+    );
+    if (userId === null) return json({ ok: false, error: "bad-user" }, 400);
+    try {
+      const result = await getUserRatedCount(userId);
+      return json(result, result.ok ? 200 : 400);
+    } catch (err) {
+      console.error("ratings-by-user GET failed", err);
+      return json(
+        { ok: false, error: "db-error", message: String(err?.message || err) },
+        500,
+      );
+    }
+  }
+
+  const targetId = parseTargetId(raw);
   if (targetId === null) return json({ ok: false, error: "bad-target" }, 400);
 
   // Public counts; myVote only for a verified caller.
@@ -69,7 +91,8 @@ export async function GET(request, context) {
 }
 
 export async function POST(request, context) {
-  const targetId = await resolveTargetId(request, context);
+  const raw = await resolveRawTarget(request, context);
+  const targetId = parseTargetId(raw);
   if (targetId === null) return json({ ok: false, error: "bad-target" }, 400);
 
   let body = {};

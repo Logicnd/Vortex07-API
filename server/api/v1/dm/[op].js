@@ -14,16 +14,20 @@ import {
   muteUser,
   sendGroupMessage,
   sendMessage,
+  sendSystemMessage,
   unmuteUser,
 } from "../../../lib/dm.js";
-import { resolveWriteIdentity } from "../../../lib/identity.js";
+import {
+  resolveWriteIdentity,
+  timingSafeEqualStr,
+} from "../../../lib/identity.js";
 import { guardRead } from "../../../lib/read-guard.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers":
-    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof",
+    "Content-Type, X-Playvortex-Cookie, X-Vortex07-Proof, X-Vortex07-System-Secret",
 };
 
 function json(data, status = 200) {
@@ -38,20 +42,12 @@ async function readBody(request) {
   }
 }
 
-function sessionCookieFrom(request, body) {
-  return (
-    body?.sessionCookie ||
-    request.headers.get("x-playvortex-cookie") ||
-    ""
-  );
+function sessionCookieFrom(request) {
+  return request.headers.get("x-playvortex-cookie") || "";
 }
 
-function writeProofFrom(request, body) {
-  return (
-    body?.writeProof ||
-    request.headers.get("x-vortex07-proof") ||
-    ""
-  );
+function writeProofFrom() {
+  return "";
 }
 
 async function resolveOp(request, context) {
@@ -179,8 +175,8 @@ export async function GET(request, context) {
 export async function POST(request, context) {
   const { op, peerId, groupId } = await resolveOp(request, context);
   const body = await readBody(request);
-  const sessionCookie = sessionCookieFrom(request, body);
-  const writeProof = writeProofFrom(request, body);
+  const sessionCookie = sessionCookieFrom(request);
+  const writeProof = writeProofFrom();
 
   try {
     if (op === "send") {
@@ -294,6 +290,26 @@ export async function POST(request, context) {
       });
       if (!result.ok) return json(result, result.status || 400);
       return json(result);
+    }
+
+    if (op === "system-notify") {
+      const expected = String(
+        process.env.VORTEX07_SYSTEM_DM_SECRET || "",
+      ).trim();
+      // Header only — never accept secrets from JSON body.
+      const got = String(
+        request.headers.get("x-vortex07-system-secret") || "",
+      ).trim();
+      if (!expected || !timingSafeEqualStr(got, expected)) {
+        return json({ ok: false, error: "forbidden" }, 403);
+      }
+      const result = await sendSystemMessage({
+        toUserId: body?.toUserId ?? body?.peerId,
+        body: body?.body,
+        peerName: body?.peerName || "Vortex07",
+      });
+      if (!result.ok) return json(result, result.status || 400);
+      return json(result, 201);
     }
 
     return json({ ok: false, error: "not-found", op }, 404);

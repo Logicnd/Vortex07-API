@@ -106,13 +106,14 @@ export async function getLikeStatus(targetId, actorId) {
 
 /**
  * Resolve actor for a like write.
- * Session cookie or HMAC write proof only — never trust client actorId.
+ * Cookie from request headers only — never trust body.actorId,
+ * body.sessionCookie, or body.writeProof (spoof / CSRF surface).
  */
-export async function resolveLikeActor(request, body = {}) {
+export async function resolveLikeActor(request, _body = {}) {
   const identity = await resolveAuthor({
-    authorId: body?.actorId,
-    sessionCookie: sessionCookieFrom(request, body),
-    writeProof: writeProofFrom(request, body),
+    authorId: null,
+    sessionCookie: sessionCookieFrom(request, {}),
+    writeProof: writeProofFrom(request, {}),
     requireSession: true,
   });
   if (!identity.ok) return identity;
@@ -123,7 +124,7 @@ async function guardLikeWrite(request, actorId) {
   const db = await getRedis();
   const ip = clientKeyFromRequest(request);
   const ipHit = await hitReadLimit(db, `rl:like:ip:${ip}`, {
-    max: 25,
+    max: 20,
     windowSec: 60,
   });
   if (ipHit.limited) {
@@ -135,7 +136,7 @@ async function guardLikeWrite(request, actorId) {
     };
   }
   const actorHit = await hitReadLimit(db, `rl:like:actor:${actorId}`, {
-    max: 12,
+    max: 10,
     windowSec: 60,
   });
   if (actorHit.limited) {
@@ -146,35 +147,54 @@ async function guardLikeWrite(request, actorId) {
       retryAfter: actorHit.retryAfterSec,
     };
   }
+  // Per-target spam: one actor cannot hammer a single profile.
+  const pairHit = await hitReadLimit(
+    db,
+    `rl:like:pair:${actorId}:${request?.__likeTargetId || "x"}`,
+    { max: 6, windowSec: 60 },
+  );
+  if (pairHit.limited) {
+    return {
+      ok: false,
+      error: "rate-limited",
+      status: 429,
+      retryAfter: pairHit.retryAfterSec,
+    };
+  }
   return null;
 }
 
+function selfBlockedStatus(status) {
+  return {
+    ok: false,
+    reason: "self",
+    error: "self",
+    status: 400,
+    ...status,
+  };
+}
+
 /**
- * Toggle one like.
- * Same user id can never like that same profile id (admins included).
+ * Idempotent set: like or unlike. Same actor can never inflate count by
+ * re-liking — already-liked + like is a no-op; already-unliked + unlike too.
+ * Identity must be session/proof resolved (never body.actorId).
  */
-export async function toggleLike(targetId, actorId, request = null) {
+export async function setLike(targetId, actorId, wantLiked, request = null) {
   const actor = parseUserId(actorId);
   const target = parseUserId(targetId);
   if (actor === null || target === null) {
     return { ok: false, reason: "bad-id", error: "bad-id", status: 400 };
   }
 
-  // Hard block: actorId === targetId (covers admins / spoofed self-likes).
   if (actor === target) {
     const db = await getRedis();
     await stripSelfLike(db, target);
     const status = await getLikeStatus(target, actor);
-    return {
-      ok: false,
-      reason: "self",
-      error: "self",
-      status: 400,
-      ...status,
-    };
+    return selfBlockedStatus(status);
   }
 
   if (request) {
+    request.__likeTargetId = String(target);
     const limited = await guardLikeWrite(request, actor);
     if (limited) return limited;
   }
@@ -183,17 +203,38 @@ export async function toggleLike(targetId, actorId, request = null) {
   const k = key(target);
   await stripSelfLike(db, target);
   const member = String(actor);
+  const desired = Boolean(wantLiked);
 
   const already = Boolean(await db.sIsMember(k, member));
-  if (already) {
-    await db.sRem(k, member);
-  } else {
+  if (desired && !already) {
     await db.sAdd(k, member);
+  } else if (!desired && already) {
+    await db.sRem(k, member);
   }
 
-  // Drop leftover bonus key if present (one-shot cleanup on write)
   await db.del(bonusKey(target));
 
   const status = await getLikeStatus(target, actor);
   return { ok: true, ...status };
+}
+
+/**
+ * Toggle one like (legacy). Prefer setLike with explicit liked from clients.
+ */
+export async function toggleLike(targetId, actorId, request = null) {
+  const actor = parseUserId(actorId);
+  const target = parseUserId(targetId);
+  if (actor === null || target === null) {
+    return { ok: false, reason: "bad-id", error: "bad-id", status: 400 };
+  }
+
+  if (actor === target) {
+    const db = await getRedis();
+    await stripSelfLike(db, target);
+    const status = await getLikeStatus(target, actor);
+    return selfBlockedStatus(status);
+  }
+
+  const current = await getLikeStatus(target, actor);
+  return setLike(targetId, actorId, !current.liked, request);
 }
