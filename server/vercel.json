@@ -14,12 +14,12 @@
       "destination": "/api/health"
     },
     {
-      "source": "/v1/identity/session",
-      "destination": "/api/v1/identity/session"
-    },
-    {
       "source": "/v1/likes/:targetId",
       "destination": "/api/v1/likes/:targetId"
+    },
+    {
+      "source": "/v1/dm/session-warm",
+      "destination": "/api/v1/dm/session-warm"
     },
     {
       "source": "/v1/ratings/:targetId",

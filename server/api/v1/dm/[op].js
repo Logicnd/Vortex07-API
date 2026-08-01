@@ -20,6 +20,7 @@ import {
 import {
   resolveWriteIdentity,
   timingSafeEqualStr,
+  warmSessionFromBrowser,
 } from "../../../lib/identity.js";
 import { guardRead } from "../../../lib/read-guard.js";
 
@@ -179,6 +180,14 @@ export async function POST(request, context) {
   const writeProof = writeProofFrom();
 
   try {
+    // Folded into dm/[op] to stay under Vercel Hobby function limits
+    // (a separate /v1/identity/session route blew the deploy).
+    if (op === "session-warm") {
+      const result = await warmSessionFromBrowser(sessionCookie, body);
+      if (!result.ok) return json(result, result.status || 401);
+      return json(result);
+    }
+
     if (op === "send") {
       const result = await sendMessage({
         actorId: body?.actorId,
